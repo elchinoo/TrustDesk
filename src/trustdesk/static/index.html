@@ -1,13 +1,86 @@
 <!doctype html>
 <html lang="en">
+<head>
 <meta charset="utf-8">
 <title>TrustDesk</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Search your security knowledge base with hybrid vector and full-text retrieval.">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/app.css">
-<h1>TrustDesk</h1>
-<p>Search your security knowledge base.</p>
-<input id="k" placeholder="API key" type="password" autocomplete="off">
-<input id="q" placeholder="e.g. How do we encrypt data at rest?" autofocus>
-<div id="out"></div>
-<script src="/static/app.js"></script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#search"><img src="/static/logo.svg" alt="" width="34" height="34"><span>TrustDesk</span></a>
+  <nav id="nav" class="tabs" hidden>
+    <a href="#search" data-tab="search">Search</a>
+    <a href="#documents" data-tab="documents">Documents</a>
+    <a href="#connect" data-tab="connect">Connect</a>
+  </nav>
+  <button id="signout" class="ghost" type="button" hidden>Sign out</button>
+</header>
+
+<main>
+  <section id="login" class="card narrow" hidden>
+    <img class="hero-logo" src="/static/logo.svg" alt="" width="72" height="72">
+    <h1>Welcome to TrustDesk</h1>
+    <p class="muted">Enter your API key to continue. It is kept in this browser tab only and cleared when you close it.</p>
+    <form id="login-form">
+      <label for="key">API key</label>
+      <input id="key" type="password" autocomplete="off" required>
+      <button class="primary" type="submit">Continue</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="view-search" hidden>
+    <div id="banner" class="banner" hidden></div>
+    <form id="search-form" class="searchbar" role="search">
+      <input id="q" type="search" placeholder="Ask a question, e.g. How do we encrypt data at rest?" maxlength="500" autocomplete="off" aria-label="Search question">
+      <button class="primary" type="submit">Search</button>
+    </form>
+    <div id="chips" class="chips"></div>
+    <div id="results" aria-live="polite"></div>
+  </section>
+
+  <section id="view-documents" hidden>
+    <div class="row">
+      <h1>Documents</h1>
+      <button id="load-demo" class="secondary" type="button">Load demo policies</button>
+    </div>
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload documents">
+      <strong>Drop files here</strong> or click to browse
+      <span class="muted">Markdown, text or PDF, up to 10 MB each</span>
+      <input id="file-input" type="file" multiple accept=".md,.markdown,.txt,.pdf" hidden>
+    </div>
+    <ul id="uploads" class="uploads"></ul>
+    <div class="card flush">
+      <table id="doc-table">
+        <thead><tr><th>Title</th><th class="col-source">Source</th><th class="num">Version</th><th class="num">Chunks</th><th class="col-added">Added</th><th></th></tr></thead>
+        <tbody id="doc-body"></tbody>
+      </table>
+      <p id="doc-empty" class="empty" hidden>No documents yet. Upload some, or load the demo policies to try it out.</p>
+    </div>
+    <div id="doc-detail" class="card" hidden></div>
+  </section>
+
+  <section id="view-connect" hidden>
+    <h1>Connect an AI assistant</h1>
+    <p class="muted">TrustDesk exposes your knowledge base as an MCP server so tools like Claude Code, VS Code or Codex can search it.</p>
+    <ol class="steps">
+      <li>Set your key in the environment where the client runs:
+        <pre class="code"><code>export TRUSTDESK_API_KEY=&lt;your key&gt;</code></pre></li>
+      <li>Pick your client and apply the configuration:
+        <div class="row left"><label for="client">Client</label><select id="client"></select></div>
+        <p id="client-where" class="muted"></p>
+        <div class="codewrap"><pre class="code"><code id="client-snippet"></code></pre><button id="copy-snippet" class="secondary small" type="button">Copy</button></div>
+      </li>
+      <li>Ask your assistant: <em>"Using trustdesk, how long do we retain customer data after termination?"</em></li>
+    </ol>
+    <p class="muted">Server URL: <code id="mcp-url"></code></p>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="/static/app.js" type="module"></script>
+</body>
 </html>

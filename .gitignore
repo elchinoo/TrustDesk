@@ -6,3 +6,8 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 dist/
+.env.*
+!.env.example
+api_key
+*.key
+*.pem

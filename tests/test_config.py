@@ -24,9 +24,9 @@ def test_api_key_from_env_then_file(monkeypatch, tmp_path):
     f = tmp_path / "key"
     f.write_text("from-file\nignored\n")
     monkeypatch.setenv("TRUSTDESK_API_KEY_FILE", str(f))
-    assert get_settings().api_key == "from-file"
+    assert get_settings().api_key == "from-file"  # pragma: allowlist secret
     monkeypatch.setenv("TRUSTDESK_API_KEY", "from-env")
-    assert get_settings().api_key == "from-env"
+    assert get_settings().api_key == "from-env"  # pragma: allowlist secret
     monkeypatch.delenv("TRUSTDESK_API_KEY")
     monkeypatch.setenv("TRUSTDESK_API_KEY_FILE", str(tmp_path / "missing"))
     assert get_settings().api_key == ""

@@ -11,11 +11,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from . import __version__
 from .config import get_settings
 from .db import connect
-from .ingest import ingest_text, parse_bytes, safe_source_name
+from .ingest import ingest_file, ingest_text, parse_bytes, safe_source_name
 from .mcp_server import mcp
 from .search import hybrid_search
 
 STATIC = Path(__file__).resolve().parent / "static"
+SEED_PACK = Path(__file__).resolve().parent / "seed" / "acme"
 MAX_UPLOAD = 10 * 1024 * 1024
 MAX_QUERY = 500
 
@@ -82,7 +83,7 @@ class Guard(BaseHTTPMiddleware):
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["Cache-Control"] = resp.headers.get("Cache-Control", "no-store")
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
         )
         return resp
@@ -139,6 +140,55 @@ def list_documents():
             "SELECT d.id, d.title, d.source, d.doc_type, d.version, d.created_at, count(c.id) AS chunks "
             "FROM kb_document d LEFT JOIN kb_chunk c ON c.doc_id=d.id GROUP BY d.id ORDER BY d.id"
         ).fetchall()
+
+
+@app.get("/api/documents/{doc_id}", dependencies=[Depends(require_key)])
+def get_document(doc_id: int):
+    with connect() as conn:
+        doc = conn.execute(
+            "SELECT id, title, source, doc_type, version, created_at FROM kb_document WHERE id=%s", (doc_id,)
+        ).fetchone()
+        if not doc:
+            raise HTTPException(404, "document not found")
+        doc["chunks"] = conn.execute(
+            "SELECT id, ord, heading, body FROM kb_chunk WHERE doc_id=%s ORDER BY ord", (doc_id,)
+        ).fetchall()
+    return doc
+
+
+@app.delete("/api/documents/{doc_id}", dependencies=[Depends(require_key)])
+def delete_document(doc_id: int):
+    with connect() as conn:
+        row = conn.execute("DELETE FROM kb_document WHERE id=%s RETURNING id", (doc_id,)).fetchone()
+        conn.commit()
+    if not row:
+        raise HTTPException(404, "document not found")
+    return {"deleted": doc_id}
+
+
+@app.post("/api/seed", dependencies=[Depends(require_key)])
+def load_demo_pack():
+    """Load the packaged fictional demo policies. Idempotent: unchanged files are skipped."""
+    from .db import connect_vector
+
+    results = []
+    with connect_vector() as conn:
+        for f in sorted(SEED_PACK.glob("*.md")):
+            r = ingest_file(f, conn=conn)
+            results.append({"source": f.name, "status": r["status"], "chunks": r["chunks"]})
+    return {"results": results}
+
+
+@app.get("/api/stats", dependencies=[Depends(require_key)])
+def stats():
+    s = get_settings()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT (SELECT count(*) FROM kb_document) AS documents, (SELECT count(*) FROM kb_chunk) AS chunks"
+        ).fetchone()
+    row["embedder"] = s.embedding_model if s.llm_base_url else "builtin-hash"
+    row["semantic"] = bool(s.llm_base_url)
+    return row
 
 
 @app.get("/")

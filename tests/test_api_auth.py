@@ -1,15 +1,7 @@
 import pytest
-from fastapi.testclient import TestClient
 
 from trustdesk import api
 from trustdesk.ingest import safe_source_name
-
-
-@pytest.fixture(scope="module")
-def client():
-    # The MCP session manager can only be started once per process, so share one client.
-    with TestClient(api.app) as c:
-        yield c
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +50,8 @@ def test_security_headers_and_no_api_docs(client):
     assert "script-src 'self'" in r.headers["content-security-policy"]
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["x-frame-options"] == "DENY"
-    assert "<script>" not in r.text  # no inline script: CSP stays strict
+    assert "<script>" not in r.text and "style=" not in r.text  # no inline script/style: CSP stays strict
+    assert "img-src 'self'" in r.headers["content-security-policy"]
     for path in ("/docs", "/redoc", "/openapi.json"):
         assert client.get(path).status_code == 404
 
@@ -84,3 +77,8 @@ def test_source_names_are_sanitised():
     assert safe_source_name("a\x00b\nc.md") == "abc.md"
     assert safe_source_name("") == "upload.txt"
     assert len(safe_source_name("n" * 1000)) == 200
+
+
+def test_static_assets_are_served(client):
+    for path in ("/static/app.js", "/static/app.css", "/static/clients.js", "/static/logo.svg", "/static/favicon.svg"):
+        assert client.get(path).status_code == 200, path

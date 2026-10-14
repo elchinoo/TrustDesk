@@ -44,3 +44,13 @@ def get_policy_passage(chunk_id: int) -> dict:
             (chunk_id,),
         ).fetchone()
     return row or {"error": "not found"}
+
+
+@mcp.tool()
+def list_documents() -> list[dict]:
+    """List the documents in the knowledge base (id, title, source, version, chunk count)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT d.id, d.title, d.source, d.doc_type, d.version, count(c.id) AS chunks "
+            "FROM kb_document d LEFT JOIN kb_chunk c ON c.doc_id=d.id GROUP BY d.id ORDER BY d.id"
+        ).fetchall()

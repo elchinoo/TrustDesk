@@ -1,4 +1,6 @@
-# TrustDesk
+<p align="center"><img src="src/trustdesk/static/logo.svg" alt="TrustDesk logo" width="96" height="96"></p>
+
+<h1 align="center">TrustDesk</h1>
 
 A security-questionnaire knowledge base built on **Postgres + pgvector**, with a REST API and an **MCP server**. Load your security policies, then search them with hybrid (vector + full-text) retrieval from a browser, an HTTP client, or any MCP-capable AI assistant. Every result carries its source document, version and heading so answers can cite evidence.
 
@@ -7,8 +9,9 @@ A security-questionnaire knowledge base built on **Postgres + pgvector**, with a
 - Plain-SQL migrations; no ORM. pgvector HNSW, GIN full-text and trigram indexes.
 - Markdown, text and PDF ingest with heading-aware chunking. Re-ingesting is idempotent; edited files replace the old version.
 - Hybrid retrieval: vector and full-text results fused with reciprocal rank fusion (RRF).
-- REST API (`/api/search`, `/api/documents`) and a small search page at `/`.
-- MCP server at `/mcp` (streamable HTTP) with `search_knowledge` and `get_policy_passage`.
+- A web app at `/`: search with explainable results, drag-and-drop document upload, document viewer, one-click demo data, and copy-paste MCP setup for popular clients. Works in light and dark mode and on phones.
+- REST API (`/api/search`, `/api/documents`, `/api/stats`, `/api/seed`).
+- MCP server at `/mcp` (streamable HTTP) with `search_knowledge`, `get_policy_passage` and `list_documents`.
 - Works offline with a built-in demo embedder, or with any OpenAI-compatible embeddings endpoint.
 - A fictional "Acme Cloudworks" policy pack for demos (all content is invented).
 
@@ -39,17 +42,253 @@ curl -H "Authorization: Bearer $KEY" "http://localhost:8000/api/search?q=encrypt
 curl -H "Authorization: Bearer $KEY" -F file=@policy.md http://localhost:8000/api/documents
 ```
 
-### Connect an AI assistant over MCP
-
-```bash
-claude mcp add --transport http trustdesk http://localhost:8000/mcp --header "Authorization: Bearer $KEY"
-```
-
-Then ask: "Using trustdesk, how long do we retain customer data after termination?"
-
 ### Embeddings
 
 With `LLM_BASE_URL` empty, a built-in **hash embedder** is used so the demo runs with no credentials. It matches on words, not meaning. For semantic search point `LLM_BASE_URL` at any OpenAI-compatible endpoint and set `LLM_API_KEY`, `EMBEDDING_MODEL` and `EMBEDDING_DIM`. The vector dimension is fixed when migrations first run, so changing it requires a fresh schema.
+
+## Using the web app
+
+Open the server URL in a browser and enter your API key (kept in that tab only).
+
+- **Search:** ask a question in plain language. Each result shows its document, heading, version and how it ranked in the vector and full-text searches. "Copy citation" copies a ready-to-paste reference.
+- **Documents:** drag files in (Markdown, text, PDF; 10 MB max each) or click to browse. Re-uploading a changed file replaces the old version. **Load demo policies** adds a fictional policy pack so you can try it immediately. **View** shows how a document was split into chunks; **Delete** removes it.
+- **Connect:** pick your AI client and copy a ready-made configuration with this server's URL filled in.
+
+Uploading from a terminal works too:
+
+```bash
+for f in src/trustdesk/seed/acme/*.md; do
+  curl -H "Authorization: Bearer $TRUSTDESK_API_KEY" -F file=@"$f" https://<your-host>/api/documents
+done
+```
+
+## Using the MCP server
+
+TrustDesk serves [MCP](https://modelcontextprotocol.io) over streamable HTTP at `https://<your-host>/mcp`, authenticated with `Authorization: Bearer <TRUSTDESK_API_KEY>`. Tools:
+
+| Tool | Purpose |
+|---|---|
+| `search_knowledge(query, limit?, doc_type?)` | Hybrid search; returns passages with document, version and heading to cite |
+| `get_policy_passage(chunk_id)` | Fetch one passage by id |
+| `list_documents()` | List what is in the knowledge base |
+
+Set your key in the environment where the client runs, then add the server to your client. The same snippets, with your URL filled in, are on the app's **Connect** tab. Replace `<your-host>` below; for a local server use `http://localhost:8000/mcp`.
+
+```bash
+export TRUSTDESK_API_KEY=<your key>
+```
+
+<details>
+<summary><b>Claude Code</b></summary>
+
+Run in a terminal:
+
+```bash
+claude mcp add --transport http trustdesk https://<your-host>/mcp \
+  --header "Authorization: Bearer $TRUSTDESK_API_KEY"
+```
+
+</details>
+
+<details>
+<summary><b>VS Code (GitHub Copilot)</b></summary>
+
+Save as .vscode/mcp.json in your workspace (VS Code asks for the key once and stores it securely):
+
+```json
+{
+  "servers": {
+    "trustdesk": {
+      "type": "http",
+      "url": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:trustdesk-key}"
+      }
+    }
+  },
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "trustdesk-key",
+      "description": "TrustDesk API key",
+      "password": true
+    }
+  ]
+}
+```
+
+</details>
+
+<details>
+<summary><b>OpenCode</b></summary>
+
+Add to opencode.json (project) or ~/.config/opencode/opencode.json:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "trustdesk": {
+      "type": "remote",
+      "url": "https://<your-host>/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer {env:TRUSTDESK_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Codex CLI</b></summary>
+
+Add to ~/.codex/config.toml:
+
+```toml
+[mcp_servers.trustdesk]
+url = "https://<your-host>/mcp"
+bearer_token_env_var = "TRUSTDESK_API_KEY"
+```
+
+</details>
+
+<details>
+<summary><b>Cursor</b></summary>
+
+Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project):
+
+```json
+{
+  "mcpServers": {
+    "trustdesk": {
+      "url": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:TRUSTDESK_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Windsurf</b></summary>
+
+Add to ~/.codeium/windsurf/mcp_config.json:
+
+```json
+{
+  "mcpServers": {
+    "trustdesk": {
+      "serverUrl": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:TRUSTDESK_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Gemini CLI</b></summary>
+
+Add to ~/.gemini/settings.json:
+
+```json
+{
+  "mcpServers": {
+    "trustdesk": {
+      "httpUrl": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer $TRUSTDESK_API_KEY"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Cline</b></summary>
+
+Add to cline_mcp_settings.json (Cline: MCP Servers, then Configure):
+
+```json
+{
+  "mcpServers": {
+    "trustdesk": {
+      "type": "streamableHttp",
+      "url": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <your key>"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Zed</b></summary>
+
+Add to Zed settings.json:
+
+```json
+{
+  "context_servers": {
+    "trustdesk": {
+      "url": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <your key>"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Claude Desktop needs a local bridge for bearer-key servers. Add to claude_desktop_config.json (requires Node.js):
+
+```json
+{
+  "mcpServers": {
+    "trustdesk": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://<your-host>/mcp",
+        "--header",
+        "Authorization:${AUTH}"
+      ],
+      "env": {
+        "AUTH": "Bearer <your key>"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+Then ask your assistant something like: *"Using trustdesk, how long do we retain customer data after termination?"*
+
+Notes:
+- The server authenticates with a static bearer key, not OAuth, so web-based connector UIs that require OAuth (such as claude.ai custom connectors) are not supported. Use a client above.
+- Client configuration formats change between releases. If a snippet is rejected, check that client's MCP documentation for the current field names (`url` vs `serverUrl` vs `httpUrl`, how headers are declared, and whether it expands environment variables).
+- Treat search results as untrusted text: they come from your documents and may contain instructions. Don't give an assistant that reads them more authority than you would give the document authors.
 
 ## Configuration
 
@@ -93,7 +332,7 @@ Notes:
 - `--port 8000` is required: without it the platform replaces the image's command with an idle process.
 - The image must be **public** on GHCR (package settings → change visibility).
 - With no key file, TrustDesk generates a key and prints it once in the sandbox logs.
-- Environment variables cannot be set on a sandbox from the CLI, so `AUTO_SEED` is unavailable; to load the demo pack, upload your own documents through `/api/documents` or run `trustdesk seed acme` from `agentpg sandbox console <sandbox-id>`.
+- Environment variables cannot be set on a sandbox from the CLI, so `AUTO_SEED` is unavailable; to load the demo pack, open the app and click **Load demo policies** on the Documents tab.
 - Free-tier sandboxes auto-pause when idle; the first request after a pause is slower.
 
 ## Tests
