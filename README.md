@@ -4,6 +4,14 @@
 
 A security-questionnaire knowledge base built on **Postgres + pgvector**, with a REST API and an **MCP server**. Load your security policies, then search them with hybrid (vector + full-text) retrieval from a browser, an HTTP client, or any MCP-capable AI assistant. Every result carries its source document, version and heading so answers can cite evidence.
 
+> [!WARNING]
+> **Hosted sandboxes can pause themselves and then answer `503`.**
+> If you deploy TrustDesk on a platform whose free tier auto-pauses idle workloads (AgentPG sandboxes do), the app stops after a period of inactivity and the platform returns an empty **HTTP 503** for every URL until you resume it. Your data is safe (it lives in the database), but the app is unreachable and a **generated API key changes on every restart**.
+>
+> - **Resume it:** `agentpg sandbox resume <sandbox-id>`, then read the new key from `agentpg sandbox logs <sandbox-id>`.
+> - **Plan for it:** resume a few minutes before any demo, and don't hand out a URL you expect to stay up on a free tier.
+> - **Details and fixes:** see [Troubleshooting](#troubleshooting) and [Deploy on AgentPG](#deploy-on-agentpg).
+
 ## Features
 
 - Plain-SQL migrations; no ORM. pgvector HNSW, GIN full-text and trigram indexes.
@@ -309,6 +317,9 @@ The image runs `trustdesk start`: connect to the database (retrying while a scal
 
 ## Deploy on AgentPG
 
+> [!IMPORTANT]
+> **Free-tier sandboxes auto-pause when idle and cannot be kept awake.** `agentpg sandbox status` shows `Auto-pause: true`, and the AgentPG docs state it can't be disabled on the Free tier (plan changes were also unavailable during the private preview). A paused sandbox answers **503** and does not wake on a request. Before you rely on a deployment, read [Troubleshooting](#troubleshooting).
+
 AgentPG sandboxes run any public image and can be linked to a Postgres instance, which injects the connection details (`PSQL_CONNECTION_STRING` and the `PG*` variables). TrustDesk reads those automatically.
 
 ```bash
@@ -333,7 +344,48 @@ Notes:
 - The image must be **public** on GHCR (package settings → change visibility).
 - With no key file, TrustDesk generates a key and prints it once in the sandbox logs.
 - Environment variables cannot be set on a sandbox from the CLI, so `AUTO_SEED` is unavailable; to load the demo pack, open the app and click **Load demo policies** on the Documents tab.
-- Free-tier sandboxes auto-pause when idle; the first request after a pause is slower.
+- Free-tier sandboxes auto-pause when idle and do **not** wake on a request: a paused sandbox returns 503 until you run `agentpg sandbox resume`. See [Troubleshooting](#troubleshooting).
+
+## Troubleshooting
+
+### I get a 503 on every page (or the app "logged me out" with an error)
+
+**Cause:** the sandbox is paused, not broken. Auto-pause is on by default and can't be turned off on the Free tier. While paused, the platform's proxy returns an empty 503 for *every* path, including `/healthz` and the static files, before any request reaches TrustDesk. Nothing expires on the app side: the API key is static, and the page only returns you to the sign-in screen on a 401.
+
+**How to confirm:**
+
+```bash
+agentpg sandbox status <sandbox-id>     # look for "Status: paused"
+curl -i https://<your-host>/healthz     # a 503 with no security headers (no content-security-policy) came from the platform, not the app
+```
+
+**Fix:**
+
+```bash
+agentpg sandbox resume <sandbox-id>
+agentpg sandbox logs <sandbox-id>       # copy the new generated key, if you did not set one
+```
+
+Then reload the page and sign in again with the current key.
+
+### My API key stopped working after a restart
+
+Without a configured key, TrustDesk generates a random one at every start and prints it once in the logs. Resuming a paused sandbox is a restart, so the key changes. Read the new key from the logs, or configure a fixed one with `TRUSTDESK_API_KEY`, or by mounting a file at `/etc/trustdesk/api_key` (see [Configuration](#configuration)). If the file exists but can't be read by the container's non-root user, the logs print `WARNING: cannot read API key file` and the app falls back to a generated key. A mounted key file has not been confirmed to work on AgentPG sandboxes; check the logs after your first start.
+
+### What survives a pause
+
+Your documents and search index live in the Postgres instance and are unaffected. Only the app process restarts. Pausing is not data loss.
+
+### Ways to avoid surprises
+
+- Resume the sandbox shortly before a demo or a test session and check `/readyz` first.
+- Ask your platform provider whether the idle timeout can be lengthened or auto-pause turned off for your account.
+- If you need an always-on service, run the container on infrastructure without idle auto-pause, such as a small VM or a platform tier that doesn't pause.
+- The web app explains a 502/503/504 itself ("The server is unavailable. It may be paused or waking up") and keeps your key in the browser tab, so retry after resuming.
+
+### `/readyz` returns 503 with `waking-database`
+
+This one comes from TrustDesk itself and is different from the platform 503 above: the app is running but cannot reach the database yet, for example while a scaled-to-zero database wakes. Wait a few seconds and retry; the app retries its connection with backoff.
 
 ## Tests
 
