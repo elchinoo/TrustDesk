@@ -1,0 +1,4 @@
+body { font: 16px system-ui; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+input { width: 100%; padding: .6rem; font-size: 1rem; box-sizing: border-box; margin-bottom: .6rem; }
+.r { border: 1px solid #ccc; border-radius: 6px; padding: .7rem; margin: .7rem 0; }
+small { color: #666; }

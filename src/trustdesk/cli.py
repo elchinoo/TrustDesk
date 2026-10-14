@@ -1,0 +1,94 @@
+import argparse
+import sys
+from pathlib import Path
+
+SEED_DIR = Path(__file__).resolve().parent / "seed"
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="trustdesk")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("migrate", help="apply SQL migrations")
+    seed = sub.add_parser("seed", help="load a seed pack (default: acme)")
+    seed.add_argument("pack", nargs="?", default="acme")
+    ing = sub.add_parser("ingest", help="ingest files or directories")
+    ing.add_argument("paths", nargs="+")
+    q = sub.add_parser("search", help="hybrid search from the terminal")
+    q.add_argument("query")
+    q.add_argument("-n", type=int, default=5)
+    sub.add_parser("serve", help="run the API + MCP server")
+    sub.add_parser("start", help="container entrypoint: migrate, optionally seed (AUTO_SEED=true), serve")
+    args = p.parse_args(argv)
+
+    if args.cmd == "migrate":
+        from .migrate import run
+
+        applied = run()
+        print("applied:", ", ".join(applied) if applied else "nothing (up to date)")
+    elif args.cmd in ("seed", "ingest"):
+        from .ingest import ingest_file
+
+        paths = [SEED_DIR / args.pack] if args.cmd == "seed" else [Path(x) for x in args.paths]
+        files = [f for p_ in paths for f in ([p_] if p_.is_file() else sorted(p_.rglob("*"))) if f.is_file()
+                 and f.suffix.lower() in {".md", ".txt", ".pdf"}]
+        if not files:
+            print("no ingestible files found", file=sys.stderr)
+            return 1
+        for f in files:
+            r = ingest_file(f)
+            print(f"{f.name}: {r['status']} ({r['chunks']} chunks)")
+    elif args.cmd == "search":
+        from .search import hybrid_search
+
+        for r in hybrid_search(args.query, limit=args.n):
+            print(f"[{r['score']:.4f}] {r['title']} › {r['heading']} (v{r['version']})\n    {r['body'][:160]!r}")
+    elif args.cmd == "serve":
+        _serve()
+    elif args.cmd == "start":
+        return _start()
+    return 0
+
+
+def _serve() -> None:
+    import os
+
+    import uvicorn
+
+    if not os.environ.get("TRUSTDESK_API_KEY") and os.environ.get("TRUSTDESK_ALLOW_ANONYMOUS", "").lower() not in {
+        "1", "true", "yes",
+    }:
+        import secrets
+
+        os.environ["TRUSTDESK_API_KEY"] = secrets.token_urlsafe(32)
+        print("TRUSTDESK_API_KEY was not set. Generated a key for this process (it changes on restart):\n"
+              f"  {os.environ['TRUSTDESK_API_KEY']}\nSet TRUSTDESK_API_KEY to choose your own.", file=sys.stderr)
+    uvicorn.run("trustdesk.api:app", host=os.environ.get("HOST", "0.0.0.0"), port=int(os.environ.get("PORT", "8000")))
+
+
+def _start() -> int:
+    """Zero-touch startup for sandboxes where the user cannot run separate migrate/seed jobs."""
+    import os
+
+    from .db import connect
+    from .ingest import ingest_file
+    from .migrate import run
+
+    try:
+        applied = run()  # db.connect retries with backoff, so a waking database is tolerated
+    except Exception as exc:  # noqa: BLE001 - surface a readable cause, then fail the container
+        print(f"startup failed while migrating: {exc}\n"
+              "Check that the database is reachable and the role may CREATE EXTENSION vector.", file=sys.stderr)
+        return 1
+    print("migrations applied:", ", ".join(applied) if applied else "none (up to date)")
+    if os.environ.get("AUTO_SEED", "").lower() in {"1", "true", "yes"}:
+        with connect() as conn:
+            empty = conn.execute("SELECT NOT EXISTS (SELECT 1 FROM kb_document) AS e").fetchone()["e"]
+        if empty:
+            for f in sorted((SEED_DIR / "acme").glob("*.md")):
+                print(f"seed {f.name}: {ingest_file(f)['status']}")
+    _serve()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

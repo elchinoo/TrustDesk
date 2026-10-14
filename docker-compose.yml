@@ -1,0 +1,29 @@
+# LOCAL DEVELOPMENT ONLY. Set POSTGRES_PASSWORD in your git-ignored .env (see .env.example).
+# The database is bound to 127.0.0.1.
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: trustdesk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: trustdesk
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trustdesk"]
+      interval: 3s
+      retries: 20
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://trustdesk:${POSTGRES_PASSWORD}@db:5432/trustdesk
+      TRUSTDESK_API_KEY: ${TRUSTDESK_API_KEY:-}   # empty = a key is generated and printed in the logs
+      AUTO_SEED: "true"
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+    command: trustdesk start
+volumes:
+  pgdata:
