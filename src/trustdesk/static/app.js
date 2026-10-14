@@ -32,7 +32,7 @@ function toast(msg, bad = false) {
   t.className = "toast" + (bad ? " bad" : "");
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 3500);
+  toastTimer = setTimeout(() => { t.hidden = true; }, bad ? 8000 : 3500);
 }
 
 class AuthError extends Error {}
@@ -42,6 +42,9 @@ async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers });
   if (r.status === 401) throw new AuthError("unauthorized");
   if (r.status === 429) throw new Error("Too many failed attempts. Wait a minute and try again.");
+  if (r.status === 502 || r.status === 503 || r.status === 504) {
+    throw new Error("The server is unavailable. It may be paused or waking up; wait a few seconds and try again. Your key is still saved in this tab.");
+  }
   if (!r.ok) {
     let detail = "";
     try { detail = (await r.json()).detail || ""; } catch { /* not json */ }
