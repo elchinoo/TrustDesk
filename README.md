@@ -317,12 +317,12 @@ agentpg create <instance-name>                              # or reuse an instan
 agentpg extensions create <instance-id> vector              # may need elevated rights, so enable them here
 agentpg extensions create <instance-id> pg_trgm
 
-printf '%s\n' "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" > api_key   # keep this file private
+python3 -c "import secrets; print(secrets.token_urlsafe(32))" > ~/trustdesk_api_key   # keep it OUTSIDE the repository
 agentpg sandbox create trustdesk \
   --image ghcr.io/<owner>/trustdesk:latest \
   --instance <instance-id> --port 8000 \
-  --file /etc/trustdesk/api_key=./api_key
-rm -P api_key 2>/dev/null || shred -u api_key               # after you have saved the key in your password manager
+  --file /etc/trustdesk/api_key=$HOME/trustdesk_api_key
+# store the key in your password manager, then delete the file: rm -P ~/trustdesk_api_key
 
 agentpg sandbox status <sandbox-id>                         # prints the public HTTPS URL
 agentpg sandbox logs <sandbox-id> -f
