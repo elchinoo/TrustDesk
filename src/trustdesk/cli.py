@@ -54,7 +54,9 @@ def _serve() -> None:
 
     import uvicorn
 
-    if not os.environ.get("TRUSTDESK_API_KEY") and os.environ.get("TRUSTDESK_ALLOW_ANONYMOUS", "").lower() not in {
+    from .config import get_settings
+
+    if not get_settings().api_key and os.environ.get("TRUSTDESK_ALLOW_ANONYMOUS", "").lower() not in {
         "1", "true", "yes",
     }:
         import secrets
@@ -77,7 +79,10 @@ def _start() -> int:
         applied = run()  # db.connect retries with backoff, so a waking database is tolerated
     except Exception as exc:  # noqa: BLE001 - surface a readable cause, then fail the container
         print(f"startup failed while migrating: {exc}\n"
-              "Check that the database is reachable and the role may CREATE EXTENSION vector.", file=sys.stderr)
+              "Check that the database is reachable. If the error mentions an extension, enable it first "
+              "(it may need elevated rights), e.g. on AgentPG:\n"
+              "  agentpg extensions create <instance-id> vector\n"
+              "  agentpg extensions create <instance-id> pg_trgm", file=sys.stderr)
         return 1
     print("migrations applied:", ", ".join(applied) if applied else "none (up to date)")
     if os.environ.get("AUTO_SEED", "").lower() in {"1", "true", "yes"}:

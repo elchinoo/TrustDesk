@@ -55,8 +55,8 @@ With `LLM_BASE_URL` empty, a built-in **hash embedder** is used so the demo runs
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_URL` / `DB_EXTERNAL_DSN` | local compose DB | Postgres URI. The role must be able to `CREATE EXTENSION vector` and `pg_trgm`. `DATABASE_URL` wins if both are set. |
-| `TRUSTDESK_API_KEY` | generated at startup | Bearer key for `/api` and `/mcp`. |
+| `DATABASE_URL` / `DB_EXTERNAL_DSN` / `PSQL_CONNECTION_STRING` | `PG*` variables | Postgres URI; first one set wins. If none is set, libpq uses `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`. The `vector` and `pg_trgm` extensions must exist (or the role must be allowed to create them). |
+| `TRUSTDESK_API_KEY` | generated at startup | Bearer key for `/api` and `/mcp`. Alternatively the first line of the file at `TRUSTDESK_API_KEY_FILE` (default `/etc/trustdesk/api_key`). |
 | `TRUSTDESK_ALLOW_ANONYMOUS` | `false` | `true` disables authentication. Throwaway local demos only. |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address. |
 | `AUTO_SEED` | `false` | With `trustdesk start`, load the demo pack if the knowledge base is empty. |
@@ -67,6 +67,34 @@ With `LLM_BASE_URL` empty, a built-in **hash embedder** is used so the demo runs
 `.github/workflows/build-image.yml` lints, tests, then publishes `ghcr.io/<owner>/<repo>` (`latest`, `sha-*`, version tags) from `main`, with a nightly rebuild for base-image updates.
 
 The image runs `trustdesk start`: connect to the database (retrying while a scaled-to-zero database wakes), apply migrations, optionally seed, then serve. It runs as a non-root user and sets `SSL_CERT_FILE` so `sslmode=verify-full` works with the bundled libpq.
+
+## Deploy on AgentPG
+
+AgentPG sandboxes run any public image and can be linked to a Postgres instance, which injects the connection details (`PSQL_CONNECTION_STRING` and the `PG*` variables). TrustDesk reads those automatically.
+
+```bash
+agentpg login
+agentpg create <instance-name>                              # or reuse an instance; note its id
+agentpg extensions create <instance-id> vector              # may need elevated rights, so enable them here
+agentpg extensions create <instance-id> pg_trgm
+
+printf '%s\n' "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" > api_key   # keep this file private
+agentpg sandbox create trustdesk \
+  --image ghcr.io/<owner>/trustdesk:latest \
+  --instance <instance-id> --port 8000 \
+  --file /etc/trustdesk/api_key=./api_key
+rm -P api_key 2>/dev/null || shred -u api_key               # after you have saved the key in your password manager
+
+agentpg sandbox status <sandbox-id>                         # prints the public HTTPS URL
+agentpg sandbox logs <sandbox-id> -f
+```
+
+Notes:
+- `--port 8000` is required: without it the platform replaces the image's command with an idle process.
+- The image must be **public** on GHCR (package settings → change visibility).
+- With no key file, TrustDesk generates a key and prints it once in the sandbox logs.
+- Environment variables cannot be set on a sandbox from the CLI, so `AUTO_SEED` is unavailable; to load the demo pack, upload your own documents through `/api/documents` or run `trustdesk seed acme` from `agentpg sandbox console <sandbox-id>`.
+- Free-tier sandboxes auto-pause when idle; the first request after a pause is slower.
 
 ## Tests
 

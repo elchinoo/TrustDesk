@@ -13,13 +13,31 @@ class Settings:
     allow_anonymous: bool
 
 
+API_KEY_FILE = "/etc/trustdesk/api_key"
+
+
+def _api_key() -> str:
+    """Key from TRUSTDESK_API_KEY, else the first line of TRUSTDESK_API_KEY_FILE (default
+    /etc/trustdesk/api_key) so platforms that can only mount files can still supply one."""
+    key = os.environ.get("TRUSTDESK_API_KEY", "")
+    if key:
+        return key
+    try:
+        with open(os.environ.get("TRUSTDESK_API_KEY_FILE", API_KEY_FILE)) as fh:
+            return fh.readline().strip()
+    except OSError:
+        return ""
+
+
 def get_settings() -> Settings:
     return Settings(
-        # Hosting platforms often provide the database as DB_EXTERNAL_DSN; DATABASE_URL wins if both are set.
+        # First match wins. An empty DSN makes libpq fall back to the standard PG* variables
+        # (PGHOST, PGUSER, PGPASSWORD, PGDATABASE...), which linked sandboxes also provide.
         database_url=os.environ.get("DATABASE_URL")
         or os.environ.get("DB_EXTERNAL_DSN")
-        or "postgresql://localhost:5432/trustdesk",  # credentials come from the environment / libpq, never code
-        api_key=os.environ.get("TRUSTDESK_API_KEY", ""),
+        or os.environ.get("PSQL_CONNECTION_STRING")
+        or "",
+        api_key=_api_key(),
         llm_base_url=os.environ.get("LLM_BASE_URL", "").rstrip("/"),
         llm_api_key=os.environ.get("LLM_API_KEY", ""),
         embedding_model=os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small"),
