@@ -2,136 +2,140 @@
 
 <h1 align="center">TrustDesk</h1>
 
-A security-questionnaire knowledge base built on **Postgres + pgvector**, with a REST API and an **MCP server**. Load your security policies, then search them with hybrid (vector + full-text) retrieval from a browser, an HTTP client, or any MCP-capable AI assistant. Every result carries its source document, version and heading so answers can cite evidence.
+A security-questionnaire knowledge base built on **Postgres + pgvector**, with a web app, a REST API and an **MCP server**. Load your security policies, then search them, or ask a question and get an answer that cites its sources. Every result carries its document, version and heading, so answers can show their evidence.
 
 > [!WARNING]
 > **Hosted sandboxes can pause themselves and then answer `503`.**
-> If you deploy TrustDesk on a platform whose free tier auto-pauses idle workloads (AgentPG sandboxes do), the app stops after a period of inactivity and the platform returns an empty **HTTP 503** for every URL until you resume it. Your data is safe (it lives in the database), but the app is unreachable and a **generated API key changes on every restart**.
+> If you deploy TrustDesk on a platform whose free tier auto-pauses idle workloads (AgentPG sandboxes do), the app stops after a period of inactivity and the platform returns an empty **HTTP 503** for every URL until you resume it. Your data is safe (it lives in the database), but the app is unreachable.
 >
-> - **Resume it:** `agentpg sandbox resume <sandbox-id>`, then read the new key from `agentpg sandbox logs <sandbox-id>`.
-> - **Plan for it:** resume a few minutes before any demo, and don't hand out a URL you expect to stay up on a free tier.
+> - **Resume it:** `agentpg sandbox resume <sandbox-id>`.
+> - **Then unlock it:** a restart locks the stored provider keys until you sign in again (see [How secrets are handled](#how-secrets-are-handled)). Search with an external embedding provider and Ask need the keys.
+> - **Plan for it:** resume a few minutes before any demo.
 > - **Details and fixes:** see [Troubleshooting](#troubleshooting) and [Deploy on AgentPG](#deploy-on-agentpg).
 
 ## Features
 
-- Plain-SQL migrations; no ORM. pgvector HNSW, GIN full-text and trigram indexes.
-- Markdown, text and PDF ingest with heading-aware chunking. Re-ingesting is idempotent; edited files replace the old version.
-- Hybrid retrieval: vector and full-text results fused with reciprocal rank fusion (RRF).
-- A web app at `/`: search with explainable results, drag-and-drop document upload, document viewer, one-click demo data, and copy-paste MCP setup for popular clients. Works in light and dark mode and on phones.
-- REST API (`/api/search`, `/api/documents`, `/api/stats`, `/api/seed`).
-- MCP server at `/mcp` (streamable HTTP) with `search_knowledge`, `get_policy_passage` and `list_documents`.
-- Works offline with a built-in demo embedder, or with any OpenAI-compatible embeddings endpoint.
-- A fictional "Acme Cloudworks" policy pack for demos (all content is invented).
+- **Web app** at `/`: search with explainable results, **Ask** (an answer with citations from the model you pick), drag-and-drop upload, document viewer, provider accounts, API tokens, and copy-paste MCP setup for ten clients. Light and dark mode; works on phones.
+- **Multiple provider accounts** (OpenAI, OpenRouter, GLM, Kimi, Claude, any OpenAI-compatible server), configured in the browser. Choose one for embeddings and one per question.
+- **Hybrid retrieval**: vector and full-text results fused with reciprocal rank fusion (RRF), with provenance on every result.
+- **Safe by default**: no secret files, admin password set on first run, hashed API tokens, encrypted provider keys. See [How secrets are handled](#how-secrets-are-handled).
+- **MCP server** at `/mcp` (streamable HTTP): `search_knowledge`, `get_policy_passage`, `list_documents`.
+- Plain-SQL migrations (no ORM), Markdown/text/PDF ingest with heading-aware chunking, idempotent and versioned.
+- Works offline with a built-in demo embedder, and ships a fictional "Acme Cloudworks" policy pack for demos.
 
 ## Quick start
 
 Requires Docker and [uv](https://docs.astral.sh/uv/) (or any Python 3.11+ environment).
 
 ```bash
-cp .env.example .env              # then set POSTGRES_PASSWORD (and optionally the others); .env is git-ignored
+cp .env.example .env              # then set POSTGRES_PASSWORD; .env is git-ignored
 docker compose up -d db
 uv venv && uv pip install -e ".[dev]"
 set -a; . ./.env; set +a
 .venv/bin/trustdesk migrate
-.venv/bin/trustdesk seed acme
-.venv/bin/trustdesk search "how is customer data encrypted at rest"
-.venv/bin/trustdesk serve         # http://localhost:8000, MCP at /mcp
+.venv/bin/trustdesk serve         # http://localhost:8000
 ```
 
-If `TRUSTDESK_API_KEY` is empty, `serve` generates a random key and prints it once in the console.
+The first time the server starts it prints a **one-time setup code** to its console:
 
-Everything in containers: `docker compose up --build` (binds to `127.0.0.1` only; the generated key is in `docker compose logs api`).
-
-### Use the API
-
-```bash
-export KEY=<your key>
-curl -H "Authorization: Bearer $KEY" "http://localhost:8000/api/search?q=encryption+at+rest&limit=2"
-curl -H "Authorization: Bearer $KEY" -F file=@policy.md http://localhost:8000/api/documents
 ```
+=== TrustDesk first-run setup ===
+Open the app in your browser and enter this one-time code to create the admin password:
+    XXXX-XXXX-XXXX
+```
+
+Open http://localhost:8000, enter the code and choose an admin password (12+ characters). Then go to **Documents** and click **Load demo policies**. Everything else is configured in the browser; there are no key files to create.
+
+Everything in containers: `docker compose up --build`, then read the setup code from `docker compose logs api`.
 
 ### Embeddings
 
-With `LLM_BASE_URL` empty, a built-in demo embedder is used so everything runs with no credentials. It matches on words, not meaning. For real semantic search, see [Using external LLMs](#using-external-llms-openai-openrouter-glm-kimi-claude-and-others).
+With no provider configured, a built-in demo embedder is used so everything runs with no credentials. It matches on words, not meaning. For real semantic search, add a provider account and switch embeddings to it (see [Using external LLMs](#using-external-llms-openai-openrouter-glm-kimi-claude-and-others)).
+
+## How secrets are handled
+
+Files full of credentials are the usual way these tools leak, so TrustDesk avoids them:
+
+| Secret | Where it lives | How it is protected |
+|---|---|---|
+| **Admin password** | Entered once in the browser (first run needs the setup code from the server log) | Stored only as a salted **scrypt** hash. |
+| **Browser session** | An `HttpOnly`, `SameSite=Strict` cookie (`Secure` over HTTPS) | Random value, only its SHA-256 stored server-side, 12-hour expiry, signing out or changing the password ends every session. No credential is kept in page storage. State-changing browser requests also need a custom header. |
+| **API tokens** (MCP, scripts) | Created in **Settings**, shown **once** | Only a SHA-256 hash is stored. Revocable. `read` tokens can search and list but cannot change anything or spend provider credit. |
+| **Provider API keys** (OpenAI etc.) | Entered in **Settings** | Encrypted (AES via Fernet) with a random **data key**. The data key is never stored in the clear: it is wrapped under a key derived from your admin password (scrypt). The database alone reveals nothing. Keys are never returned by the API (only the last 4 characters) and never logged. |
+
+**What this means in practice**
+
+- After a **restart** the stored provider keys are **locked** until you sign in or use the unlock box. The unwrapped key exists only in the server's memory. Until then, external embeddings and Ask return "locked" (searching with the demo embedder keeps working).
+- For unattended restarts, you may *additionally* provide a platform-managed secret as `TRUSTDESK_ENCRYPTION_KEY` (or a file at `/etc/trustdesk/encryption_key`). The server then wraps the data key a second time and unlocks itself. This reintroduces one secret outside the app; keep it in your platform's secret store, never in git or an image.
+- **Forgot the admin password?** Run `trustdesk reset-admin` on the server (it needs database access). It clears the password, the vault and **every stored provider key**, and the setup flow starts again. There is no back door: that is the point.
+- Optionally, a static `TRUSTDESK_API_KEY` (environment variable or file) still works as a full-access credential for automation. Prefer API tokens.
+- **Outbound requests:** provider URLs you enter are checked before every call. Loopback, private, link-local (cloud metadata) and carrier-grade-NAT addresses are refused, along with embedded credentials and plain `http` to non-local hosts; redirects are never followed. To allow a local model server such as Ollama, the operator sets `TRUSTDESK_ALLOW_PRIVATE_LLM_URLS=true`.
+
+See [SECURITY.md](SECURITY.md) for the full model and its limits.
 
 ## Using external LLMs (OpenAI, OpenRouter, GLM, Kimi, Claude and others)
 
-There are two different jobs a language model can do here, and they are configured in different places.
+A language model does two different jobs here, configured in different places:
 
-| Job | Who does it today | How to choose the model |
+| Job | Where | Notes |
 |---|---|---|
-| **Embeddings**: turning documents and questions into vectors for search | TrustDesk calls an **OpenAI-compatible `/embeddings` endpoint** | Environment variables below |
-| **Answering**: reading the retrieved passages and writing the reply | **Your AI assistant**, through [MCP](#using-the-mcp-server). TrustDesk does not call a chat model itself yet | Whatever model your client uses (Claude Code uses Claude, Codex uses OpenAI models, and so on). Other clients let you pick a provider |
+| **Embeddings**: turn documents and questions into vectors for search | **Settings > Search embeddings**: pick one account | Needs an OpenAI-compatible `/embeddings` endpoint. Switching models re-embeds your passages in the background, with progress, and changes nothing if the provider call fails. |
+| **Answering**: write the reply from retrieved passages | **Ask**: pick an account for each question | Needs an OpenAI-compatible `/chat/completions` endpoint. The answer cites the numbered passages; an answer that cites none is flagged. |
+| **Answering through your own tools** | Your MCP client's model | Claude Code uses Claude, Codex uses OpenAI models, and so on; see [Using the MCP server](#using-the-mcp-server). |
 
-So to "use Claude, Kimi or GLM" for answers, connect a client that runs that model. To use a hosted model for search quality, configure embeddings as follows.
+### Add accounts in the browser
 
-### Configure embeddings
+Open **Settings > Provider accounts > Add account**, choose a provider (this pre-fills the URL and suggestions), paste the API key, set the chat and/or embedding model names, and use **Test chat** / **Test embeddings** to confirm it works. You can add as many accounts as you like. Model names change often, so use the ones from your provider's documentation.
 
-```bash
-LLM_BASE_URL=https://api.openai.com/v1      # the provider's base URL; TrustDesk appends /embeddings
-LLM_API_KEY=<provider key>                  # or mount it as a file (see below)
-EMBEDDING_MODEL=text-embedding-3-small      # the provider's embedding model name
-EMBEDDING_DIM=768                           # vector size to store; see the notes below
-```
-
-| Provider | `LLM_BASE_URL` | Example `EMBEDDING_MODEL` | Notes |
-|---|---|---|---|
-| OpenAI | `https://api.openai.com/v1` | `text-embedding-3-small` | Supports choosing the output size, so `EMBEDDING_DIM=768` works. |
-| OpenRouter | `https://openrouter.ai/api/v1` | `openai/text-embedding-3-small`, `qwen/qwen3-embedding-0.6b` | Has an OpenAI-style embeddings endpoint (`POST /embeddings`) with an optional `dimensions` field. Model list: `GET https://openrouter.ai/api/v1/embeddings/models`. |
-| Zhipu GLM | `https://open.bigmodel.cn/api/paas/v4` | `embedding-3` | Documented as OpenAI-compatible. `dimensions` is supported on `embedding-3` and later only. Note the `/v4` path, not `/v1`. |
-| Moonshot Kimi | `https://api.moonshot.ai/v1` | none | Its OpenAI-compatible API is documented for **chat**. We could not confirm an embeddings endpoint, so use another provider above for embeddings and Kimi (via a client that supports it) for answering. |
-| Anthropic Claude | none | none | Anthropic does not offer an embedding model and points to Voyage AI, whose API is **not** OpenAI-compatible. Use another provider for embeddings; use Claude through an MCP client such as Claude Code for answering. |
-| Self-hosted (Ollama, vLLM, LiteLLM proxy) | for example `http://localhost:11434/v1` | the model you serve | Anything exposing `POST {base}/embeddings` in the OpenAI format works. |
+| Provider | Base URL | Notes |
+|---|---|---|
+| OpenAI | `https://api.openai.com/v1` | Embedding model `text-embedding-3-small` supports a custom size, so 768 works. |
+| OpenRouter | `https://openrouter.ai/api/v1` | One key for many models; has an OpenAI-style embeddings endpoint (for example `openai/text-embedding-3-small`). |
+| Zhipu GLM | `https://open.bigmodel.cn/api/paas/v4` | Documented as OpenAI-compatible; embedding model `embedding-3`. Note `/v4`, not `/v1`. |
+| Moonshot Kimi | `https://api.moonshot.ai/v1` | Documented for chat only; use another account for embeddings. |
+| Anthropic Claude | `https://api.anthropic.com/v1` | Anthropic's OpenAI-compatibility endpoint, which they describe as not for production use. Chat only: Anthropic offers no embedding model. |
+| Self-hosted (Ollama, vLLM, LiteLLM) | for example `http://localhost:11434/v1` | Needs `TRUSTDESK_ALLOW_PRIVATE_LLM_URLS=true` on the server. |
 
 > [!NOTE]
-> These providers were checked against their public documentation only. TrustDesk's request format is covered by automated tests against a mock server, but it has **not** been run against each live provider. Test with a few documents first.
+> These providers were checked against their public documentation only. The request format is covered by automated tests against a mock server and was exercised end to end in the UI against a fake local provider, but it has **not** been run against each live provider. Test with a few documents first.
 
-**Choosing `EMBEDDING_DIM`:**
-- It must match what the model returns. If it doesn't, TrustDesk stops with the number the model actually returned.
-- The default is 768. The index supports at most 2000 dimensions, so models that default to larger vectors (for example 3072) must be asked for a smaller size.
-- If the provider rejects the `dimensions` field, set `EMBEDDING_SEND_DIMENSIONS=false` and set `EMBEDDING_DIM` to the model's native size.
+**Choosing the embedding dimension.** It must match what the model returns; if it doesn't, TrustDesk tells you the number the model actually returned. The index supports at most 2000 dimensions, so models whose default is larger (for example 3072) must be asked for a smaller size.
 
-**Switching models later.** Vectors from different models are not comparable, so after changing `LLM_BASE_URL`, `EMBEDDING_MODEL` or `EMBEDDING_DIM`, re-embed everything once:
+**Privacy.** With an external provider, the text of document passages, search queries and questions is sent to that provider. Don't use it for documents you aren't allowed to share with them, and check their data-retention terms.
 
-```bash
-trustdesk reembed      # changes the vector size if needed, re-embeds every chunk, rebuilds the index
-```
+### Environment configuration (optional)
 
-Search is unavailable while it runs, and it is all-or-nothing: if the provider fails midway, nothing changes. On start, TrustDesk refuses to run if `EMBEDDING_DIM` doesn't match the stored vectors, and tells you to match it or run `trustdesk reembed`.
+You can also configure a single provider from the environment instead of the browser. It appears read-only in Settings as "Environment".
 
-**Keeping the key out of the environment.** If your platform can only mount files, put the key in `/etc/trustdesk/llm_api_key` (or point `LLM_API_KEY_FILE` at another path). The environment variable wins if both are set.
+| Variable | Meaning |
+|---|---|
+| `LLM_BASE_URL` | Provider base URL. Empty means the demo embedder. |
+| `LLM_API_KEY` | Provider key. Prefer entering keys in the browser. |
+| `EMBEDDING_MODEL`, `EMBEDDING_DIM` | Embedding model and vector size (default `768`). |
+| `LLM_CHAT_MODEL` | Chat model, to use this account in Ask. |
+| `EMBEDDING_SEND_DIMENSIONS` | `false` if the provider rejects the `dimensions` field. |
 
-**Privacy.** With an external provider, the text of every document chunk and every search query is sent to that provider. Don't enable it for documents you aren't allowed to share with them, and check the provider's data-retention terms.
-
-**On AgentPG sandboxes.** The documented ways to give a sandbox settings are `--file` (mount a file) and `--command`. AgentPG can also store provider keys on your account, but its docs don't say how they reach a sandbox, so don't rely on that. A pattern that fits the documented options, **not yet verified end to end**: mount the key as a file and pass the non-secret settings through the command:
-
-```bash
-agentpg sandbox create trustdesk --image ghcr.io/<owner>/trustdesk:latest --instance <instance-id> --port 8000 \
-  --file /etc/trustdesk/llm_api_key=$HOME/llm_api_key \
-  --command "env LLM_BASE_URL=https://api.openai.com/v1 EMBEDDING_MODEL=text-embedding-3-small EMBEDDING_DIM=768 trustdesk start"
-```
-
-Do not put the key itself in `--command`: command lines are easy to leak. After the first start, check `agentpg sandbox logs <sandbox-id>` for errors, and use `agentpg sandbox console <sandbox-id>` to run `trustdesk reembed` if you changed models on an existing database.
+From a terminal, `trustdesk reembed` re-embeds everything after you change these.
 
 ## Using the web app
 
-Open the server URL in a browser and enter your API key (kept in that tab only).
-
-- **Search:** ask a question in plain language. Each result shows its document, heading, version and how it ranked in the vector and full-text searches. "Copy citation" copies a ready-to-paste reference.
-- **Documents:** drag files in (Markdown, text, PDF; 10 MB max each) or click to browse. Re-uploading a changed file replaces the old version. **Load demo policies** adds a fictional policy pack so you can try it immediately. **View** shows how a document was split into chunks; **Delete** removes it.
+- **Search:** ask in plain language. Each result shows its document, heading, version and how it ranked in the vector and full-text searches. "Copy citation" copies a ready-to-paste reference.
+- **Ask:** choose an account and ask a question. You get an answer with `[1]`-style citations that jump to the numbered source passages. Treat it as a draft: check the sources.
+- **Documents:** drag files in (Markdown, text, PDF; 10 MB max each). Re-uploading a changed file replaces the old version. **Load demo policies** adds a fictional policy pack. **View** shows how a document was split into chunks.
+- **Settings:** provider accounts, which account provides embeddings, your admin password and API tokens.
 - **Connect:** pick your AI client and copy a ready-made configuration with this server's URL filled in.
 
-Uploading from a terminal works too:
+Scripting uploads needs an API token with **full** access (Settings > API tokens):
 
 ```bash
 for f in src/trustdesk/seed/acme/*.md; do
-  curl -H "Authorization: Bearer $TRUSTDESK_API_KEY" -F file=@"$f" https://<your-host>/api/documents
+  curl -H "Authorization: Bearer $TRUSTDESK_TOKEN" -F file=@"$f" https://<your-host>/api/documents
 done
 ```
 
 ## Using the MCP server
 
-TrustDesk serves [MCP](https://modelcontextprotocol.io) over streamable HTTP at `https://<your-host>/mcp`, authenticated with `Authorization: Bearer <TRUSTDESK_API_KEY>`. Tools:
+TrustDesk serves [MCP](https://modelcontextprotocol.io) over streamable HTTP at `https://<your-host>/mcp`, authenticated with `Authorization: Bearer <token>`. Create a **read-only** token under **Settings > API tokens**. Browser sessions are not accepted on `/mcp`. Tools:
 
 | Tool | Purpose |
 |---|---|
@@ -139,10 +143,10 @@ TrustDesk serves [MCP](https://modelcontextprotocol.io) over streamable HTTP at 
 | `get_policy_passage(chunk_id)` | Fetch one passage by id |
 | `list_documents()` | List what is in the knowledge base |
 
-Set your key in the environment where the client runs, then add the server to your client. The same snippets, with your URL filled in, are on the app's **Connect** tab. Replace `<your-host>` below; for a local server use `http://localhost:8000/mcp`.
+Set the token in the environment where the client runs, then add the server to your client. The same snippets, with your URL filled in, are on the app's **Connect** tab. Replace `<your-host>` below; for a local server use `http://localhost:8000/mcp`.
 
 ```bash
-export TRUSTDESK_API_KEY=<your key>
+export TRUSTDESK_TOKEN=<your token>
 ```
 
 <details>
@@ -152,7 +156,7 @@ Run in a terminal:
 
 ```bash
 claude mcp add --transport http trustdesk https://<your-host>/mcp \
-  --header "Authorization: Bearer $TRUSTDESK_API_KEY"
+  --header "Authorization: Bearer $TRUSTDESK_TOKEN"
 ```
 
 </details>
@@ -177,7 +181,7 @@ Save as .vscode/mcp.json in your workspace (VS Code asks for the key once and st
     {
       "type": "promptString",
       "id": "trustdesk-key",
-      "description": "TrustDesk API key",
+      "description": "TrustDesk API token",
       "password": true
     }
   ]
@@ -200,7 +204,7 @@ Add to opencode.json (project) or ~/.config/opencode/opencode.json:
       "url": "https://<your-host>/mcp",
       "enabled": true,
       "headers": {
-        "Authorization": "Bearer {env:TRUSTDESK_API_KEY}"
+        "Authorization": "Bearer {env:TRUSTDESK_TOKEN}"
       }
     }
   }
@@ -217,7 +221,7 @@ Add to ~/.codex/config.toml:
 ```toml
 [mcp_servers.trustdesk]
 url = "https://<your-host>/mcp"
-bearer_token_env_var = "TRUSTDESK_API_KEY"
+bearer_token_env_var = "TRUSTDESK_TOKEN"
 ```
 
 </details>
@@ -233,7 +237,7 @@ Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project):
     "trustdesk": {
       "url": "https://<your-host>/mcp",
       "headers": {
-        "Authorization": "Bearer ${env:TRUSTDESK_API_KEY}"
+        "Authorization": "Bearer ${env:TRUSTDESK_TOKEN}"
       }
     }
   }
@@ -253,7 +257,7 @@ Add to ~/.codeium/windsurf/mcp_config.json:
     "trustdesk": {
       "serverUrl": "https://<your-host>/mcp",
       "headers": {
-        "Authorization": "Bearer ${env:TRUSTDESK_API_KEY}"
+        "Authorization": "Bearer ${env:TRUSTDESK_TOKEN}"
       }
     }
   }
@@ -273,7 +277,7 @@ Add to ~/.gemini/settings.json:
     "trustdesk": {
       "httpUrl": "https://<your-host>/mcp",
       "headers": {
-        "Authorization": "Bearer $TRUSTDESK_API_KEY"
+        "Authorization": "Bearer $TRUSTDESK_TOKEN"
       }
     }
   }
@@ -294,7 +298,7 @@ Add to cline_mcp_settings.json (Cline: MCP Servers, then Configure):
       "type": "streamableHttp",
       "url": "https://<your-host>/mcp",
       "headers": {
-        "Authorization": "Bearer <your key>"
+        "Authorization": "Bearer <your token>"
       }
     }
   }
@@ -314,7 +318,7 @@ Add to Zed settings.json:
     "trustdesk": {
       "url": "https://<your-host>/mcp",
       "headers": {
-        "Authorization": "Bearer <your key>"
+        "Authorization": "Bearer <your token>"
       }
     }
   }
@@ -341,7 +345,7 @@ Claude Desktop needs a local bridge for bearer-key servers. Add to claude_deskto
         "Authorization:${AUTH}"
       ],
       "env": {
-        "AUTH": "Bearer <your key>"
+        "AUTH": "Bearer <your token>"
       }
     }
   }
@@ -353,8 +357,9 @@ Claude Desktop needs a local bridge for bearer-key servers. Add to claude_deskto
 Then ask your assistant something like: *"Using trustdesk, how long do we retain customer data after termination?"*
 
 Notes:
-- The server authenticates with a static bearer key, not OAuth, so web-based connector UIs that require OAuth (such as claude.ai custom connectors) are not supported. Use a client above.
+- The server authenticates with a bearer token, not OAuth, so web-based connector UIs that require OAuth (such as claude.ai custom connectors) are not supported. Use a client above.
 - Client configuration formats change between releases. If a snippet is rejected, check that client's MCP documentation for the current field names (`url` vs `serverUrl` vs `httpUrl`, how headers are declared, and whether it expands environment variables).
+- If you use an external embedding provider and the server has restarted, searches return "locked" until you unlock the vault in the web app (or the operator configured a platform secret).
 - Treat search results as untrusted text: they come from your documents and may contain instructions. Don't give an assistant that reads them more authority than you would give the document authors.
 
 ## Configuration
@@ -362,12 +367,13 @@ Notes:
 | Variable | Default | Meaning |
 |---|---|---|
 | `DATABASE_URL` / `DB_EXTERNAL_DSN` / `PSQL_CONNECTION_STRING` | `PG*` variables | Postgres URI; first one set wins. If none is set, libpq uses `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`. The `vector` and `pg_trgm` extensions must exist (or the role must be allowed to create them). |
-| `TRUSTDESK_API_KEY` | generated at startup | Bearer key for `/api` and `/mcp`. Alternatively the first line of the file at `TRUSTDESK_API_KEY_FILE` (default `/etc/trustdesk/api_key`). |
-| `TRUSTDESK_ALLOW_ANONYMOUS` | `false` | `true` disables authentication. Throwaway local demos only. |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address. |
 | `AUTO_SEED` | `false` | With `trustdesk start`, load the demo pack if the knowledge base is empty. |
-| `LLM_BASE_URL`, `LLM_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM` | empty / empty / `text-embedding-3-small` / `768` | Embeddings endpoint; see [Using external LLMs](#using-external-llms-openai-openrouter-glm-kimi-claude-and-others). `LLM_API_KEY` can come from a file (`LLM_API_KEY_FILE`, default `/etc/trustdesk/llm_api_key`). |
-| `EMBEDDING_SEND_DIMENSIONS` | `true` | Set `false` if the provider rejects the `dimensions` request field. |
+| `TRUSTDESK_ENCRYPTION_KEY` | none | Optional platform-managed secret that lets the vault unlock itself after a restart (file alternative: `/etc/trustdesk/encryption_key`). |
+| `TRUSTDESK_ALLOW_PRIVATE_LLM_URLS` | `false` | Allow provider URLs on loopback/private networks, for a local model server. Link-local is always blocked. |
+| `TRUSTDESK_API_KEY` | none | Optional static full-access credential for automation (file alternative: `/etc/trustdesk/api_key`). Prefer API tokens. |
+| `TRUSTDESK_ALLOW_ANONYMOUS` | `false` | `true` disables authentication entirely. Throwaway local demos only. |
+| `LLM_BASE_URL`, `LLM_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `LLM_CHAT_MODEL`, `EMBEDDING_SEND_DIMENSIONS` | | Optional environment provider; see [Environment configuration](#environment-configuration-optional). |
 
 ## Container image
 
@@ -380,7 +386,7 @@ The image runs `trustdesk start`: connect to the database (retrying while a scal
 > [!IMPORTANT]
 > **Free-tier sandboxes auto-pause when idle and cannot be kept awake.** `agentpg sandbox status` shows `Auto-pause: true`, and the AgentPG docs state it can't be disabled on the Free tier (plan changes were also unavailable during the private preview). A paused sandbox answers **503** and does not wake on a request. Before you rely on a deployment, read [Troubleshooting](#troubleshooting).
 
-AgentPG sandboxes run any public image and can be linked to a Postgres instance, which injects the connection details (`PSQL_CONNECTION_STRING` and the `PG*` variables). TrustDesk reads those automatically.
+AgentPG sandboxes run any public image and can be linked to a Postgres instance, which injects the connection details (`PSQL_CONNECTION_STRING` and the `PG*` variables). TrustDesk reads those automatically. **No key files are needed.**
 
 ```bash
 agentpg login
@@ -388,29 +394,29 @@ agentpg create <instance-name>                              # or reuse an instan
 agentpg extensions create <instance-id> vector              # may need elevated rights, so enable them here
 agentpg extensions create <instance-id> pg_trgm
 
-python3 -c "import secrets; print(secrets.token_urlsafe(32))" > ~/trustdesk_api_key   # keep it OUTSIDE the repository
 agentpg sandbox create trustdesk \
   --image ghcr.io/<owner>/trustdesk:latest \
-  --instance <instance-id> --port 8000 \
-  --file /etc/trustdesk/api_key=$HOME/trustdesk_api_key
-# store the key in your password manager, then delete the file: rm -P ~/trustdesk_api_key
+  --instance <instance-id> --port 8000
 
 agentpg sandbox status <sandbox-id>                         # prints the public HTTPS URL
-agentpg sandbox logs <sandbox-id> -f
+agentpg sandbox logs <sandbox-id>                           # contains the one-time setup code
 ```
+
+Then open the URL, enter the **setup code from the logs**, choose an admin password, and click **Load demo policies** on the Documents tab. Add provider accounts under Settings.
 
 Notes:
 - `--port 8000` is required: without it the platform replaces the image's command with an idle process.
-- The image must be **public** on GHCR (package settings → change visibility).
-- With no key file, TrustDesk generates a key and prints it once in the sandbox logs.
-- Environment variables cannot be set on a sandbox from the CLI, so `AUTO_SEED` is unavailable; to load the demo pack, open the app and click **Load demo policies** on the Documents tab.
-- Free-tier sandboxes auto-pause when idle and do **not** wake on a request: a paused sandbox returns 503 until you run `agentpg sandbox resume`. See [Troubleshooting](#troubleshooting).
+- The image must be **public** on GHCR (package settings > change visibility).
+- Setup is protected by the code in the logs, which only someone who can read the sandbox logs has. Complete setup promptly after creating the sandbox: until then, anyone who finds the URL can try to guess the code (attempts are rate limited).
+- Environment variables cannot be set on a sandbox from the CLI, which is why everything is configured in the browser.
+- Free-tier sandboxes auto-pause when idle and do **not** wake on a request: a paused sandbox returns 503 until you run `agentpg sandbox resume`. After a resume, **unlock the provider keys** with your admin password. See [Troubleshooting](#troubleshooting).
+- Optional: the documented way to give a sandbox a file is `--file`. If you want unattended unlock after restarts, mount a platform-managed secret at `/etc/trustdesk/encryption_key`, created outside this repository, and never commit it. The trade-offs are described in [How secrets are handled](#how-secrets-are-handled).
 
 ## Troubleshooting
 
-### I get a 503 on every page (or the app "logged me out" with an error)
+### I get a 503 on every page
 
-**Cause:** the sandbox is paused, not broken. Auto-pause is on by default and can't be turned off on the Free tier. While paused, the platform's proxy returns an empty 503 for *every* path, including `/healthz` and the static files, before any request reaches TrustDesk. Nothing expires on the app side: the API key is static, and the page only returns you to the sign-in screen on a 401.
+**Cause:** the sandbox is paused, not broken. Auto-pause is on by default and can't be turned off on the Free tier. While paused, the platform's proxy returns an empty 503 for *every* path, including `/healthz` and the static files, before any request reaches TrustDesk. Nothing expires on the app side.
 
 **How to confirm:**
 
@@ -419,37 +425,33 @@ agentpg sandbox status <sandbox-id>     # look for "Status: paused"
 curl -i https://<your-host>/healthz     # a 503 with no security headers (no content-security-policy) came from the platform, not the app
 ```
 
-**Fix:**
+**Fix:** `agentpg sandbox resume <sandbox-id>`, reload the page and sign in. The web app explains a 502/503/504 itself and offers a Retry button.
 
-```bash
-agentpg sandbox resume <sandbox-id>
-agentpg sandbox logs <sandbox-id>       # copy the new generated key, if you did not set one
-```
+### The page says "Provider keys are locked"
 
-Then reload the page and sign in again with the current key.
+The server restarted (a resume is a restart), and the stored provider keys can only be unwrapped with your admin password, which is not stored anywhere. Enter the password in the banner. Until then, external embeddings and Ask are paused; searching with the demo embedder still works. To avoid this on unattended restarts, see the platform secret under [How secrets are handled](#how-secrets-are-handled).
 
-### My API key stopped working after a restart
+### I forgot the admin password
 
-Without a configured key, TrustDesk generates a random one at every start and prints it once in the logs. Resuming a paused sandbox is a restart, so the key changes. Read the new key from the logs, or configure a fixed one with `TRUSTDESK_API_KEY`, or by mounting a file at `/etc/trustdesk/api_key` (see [Configuration](#configuration)). If the file exists but can't be read by the container's non-root user, the logs print `WARNING: cannot read ... file` and the app falls back to a generated key. On an AgentPG sandbox the mounted file appeared as `-rwxr----- app root` (owned by the container's `app` user), so it is readable. If the logs nevertheless show `Generated a key`, the file was probably not in place when the process started; resume the sandbox once and check the logs again. To check without printing the key, run inside `agentpg sandbox console <sandbox-id>`:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat /etc/trustdesk/api_key)" http://localhost:8000/api/stats   # 200 = the file key is accepted
-```
+Run `trustdesk reset-admin` where the server can reach the database (on AgentPG: `agentpg sandbox console <sandbox-id>`). This clears the password, the vault and every stored provider key, then restarts the first-run setup (a new setup code is printed to the log on the next start). Re-add your provider accounts' keys afterwards.
 
 ### What survives a pause
 
-Your documents and search index live in the Postgres instance and are unaffected. Only the app process restarts. Pausing is not data loss.
+Your documents, search index, accounts (without their keys being usable until unlocked), API tokens and sessions live in the Postgres instance and are unaffected. Only the app process restarts. Pausing is not data loss.
 
 ### Ways to avoid surprises
 
 - Resume the sandbox shortly before a demo or a test session and check `/readyz` first.
 - Ask your platform provider whether the idle timeout can be lengthened or auto-pause turned off for your account.
 - If you need an always-on service, run the container on infrastructure without idle auto-pause, such as a small VM or a platform tier that doesn't pause.
-- The web app explains a 502/503/504 itself ("The server is unavailable. It may be paused or waking up") and keeps your key in the browser tab, so retry after resuming.
 
 ### `/readyz` returns 503 with `waking-database`
 
 This one comes from TrustDesk itself and is different from the platform 503 above: the app is running but cannot reach the database yet, for example while a scaled-to-zero database wakes. Wait a few seconds and retry; the app retries its connection with backoff.
+
+### Search says "re-embedding is in progress"
+
+You switched embedding providers. Search and uploads pause while every passage is re-embedded (progress is shown in Settings). If the provider fails midway, nothing is changed.
 
 ## Tests
 
@@ -461,13 +463,13 @@ make test-db    # integration tests against a throwaway database on the compose 
 
 ## Security
 
-Read [SECURITY.md](SECURITY.md) before exposing this to a network. In short: authenticated by default and fail-closed, rate-limited key checks, strict CSP, bounded uploads, non-root container, no secrets in the image or repository. The API is single-tenant: anyone with the key can read and add every document.
+Read [SECURITY.md](SECURITY.md) before exposing this to a network. In short: no secret files, a salted-hash admin password, hashed revocable tokens, encrypted provider keys that stay locked after a restart, rate-limited sign-in, strict CSP, SSRF-guarded provider URLs, bounded uploads, non-root container. The knowledge base is single-tenant: anyone with full access can read and change every document.
 
 ## Design notes
 
 - **Just Postgres:** SQL lives in `src/trustdesk/migrations/` and `src/trustdesk/search.py`.
 - **Cold-start tolerant:** `db.connect` retries with backoff and `/readyz` reports `waking-database` rather than failing hard.
-- **Read-only tools:** the MCP server only searches; retrieved text is data, never instructions.
+- **Read-only MCP tools:** the MCP server only searches and lists; retrieved text is data, never instructions.
 - **Limits:** 10 MB uploads, 500-page PDFs, text extraction only (no OCR).
 
 ## License

@@ -17,10 +17,8 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql://trustdesk:${POSTGRES_PASSWORD}@db:5432/trustdesk
-      TRUSTDESK_API_KEY: ${TRUSTDESK_API_KEY:-}   # empty = a key is generated and printed in the logs
       AUTO_SEED: "true"
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
+      # First run prints a one-time setup code: see `docker compose logs api`.
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
       db: {condition: service_healthy}

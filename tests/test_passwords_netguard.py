@@ -67,7 +67,7 @@ def test_plain_http_only_for_allowed_local(monkeypatch):
     assert netguard.check_url("http://localhost:11434/v1") == "http://localhost:11434/v1"
 
 
-@pytest.mark.parametrize("url", ["", "ftp://x/v1", "https://user:pw@example.test/v1", "https://example.test/v1?x=1",
+@pytest.mark.parametrize("url", ["", "ftp://x/v1", "https://user:pw@example.test/v1", "https://example.test/v1?x=1",  # pragma: allowlist secret
                                  "https://example.test/v1#f", "https:///v1", "x" * 301])
 def test_malformed_urls_rejected(monkeypatch, url):
     _resolve(monkeypatch, "93.184.216.34")

@@ -424,7 +424,7 @@ def unlock_vault(body: UnlockBody, request: Request):
             raise HTTPException(409, "no provider keys are stored yet; set an admin password first")
         if not vault.unlock_with_password(conn, body.password):
             _record_failure(client)
-            raise HTTPException(401, "wrong password")
+            raise HTTPException(403, "wrong password")  # 403, not 401: the session itself is still valid
         conn.commit()
     return {"ok": True}
 

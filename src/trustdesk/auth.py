@@ -19,7 +19,7 @@ from .config import get_settings
 SESSION_HOURS = 12
 TOKEN_PREFIX = "td_"
 _K_ADMIN = "admin_password_hash"
-_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no look-alike characters
+_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no look-alike characters  # pragma: allowlist secret
 _setup_code: str | None = None
 
 

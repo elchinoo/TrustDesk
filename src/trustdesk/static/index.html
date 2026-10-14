@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>TrustDesk</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="Search your security knowledge base with hybrid vector and full-text retrieval.">
+<meta name="description" content="Search your security knowledge base and answer questions from it, with citations.">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -13,24 +13,17 @@
   <a class="brand" href="#search"><img src="/static/logo.svg" alt="" width="34" height="34"><span>TrustDesk</span></a>
   <nav id="nav" class="tabs" hidden>
     <a href="#search" data-tab="search">Search</a>
+    <a href="#ask" data-tab="ask">Ask</a>
     <a href="#documents" data-tab="documents">Documents</a>
+    <a href="#settings" data-tab="settings">Settings</a>
     <a href="#connect" data-tab="connect">Connect</a>
   </nav>
   <button id="signout" class="ghost" type="button" hidden>Sign out</button>
 </header>
 
 <main>
-  <section id="login" class="card narrow" hidden>
-    <img class="hero-logo" src="/static/logo.svg" alt="" width="72" height="72">
-    <h1>Welcome to TrustDesk</h1>
-    <p class="muted">Enter your API key to continue. It is kept in this browser tab only and cleared when you close it.</p>
-    <form id="login-form">
-      <label for="key">API key</label>
-      <input id="key" type="password" autocomplete="off" required>
-      <button class="primary" type="submit">Continue</button>
-      <p id="login-error" class="error" role="alert"></p>
-    </form>
-  </section>
+  <section id="auth-card" class="card narrow" hidden></section>
+  <div id="vault-banner" class="banner vault" hidden></div>
 
   <section id="view-search" hidden>
     <div id="banner" class="banner" hidden></div>
@@ -40,6 +33,19 @@
     </form>
     <div id="chips" class="chips"></div>
     <div id="results" aria-live="polite"></div>
+  </section>
+
+  <section id="view-ask" hidden>
+    <h1>Ask</h1>
+    <p class="muted">Retrieves the most relevant passages, then has the model you choose write an answer that cites them. Passages are sent to that provider.</p>
+    <div id="ask-note" class="banner" hidden></div>
+    <form id="ask-form" class="card">
+      <div class="field"><label for="ask-account">Account</label><select id="ask-account"></select></div>
+      <div class="field"><label for="ask-q">Question</label>
+        <textarea id="ask-q" rows="3" maxlength="1000" placeholder="e.g. How quickly do you notify customers after a data breach?" required></textarea></div>
+      <button id="ask-submit" class="primary" type="submit">Ask</button>
+    </form>
+    <div id="ask-result" aria-live="polite"></div>
   </section>
 
   <section id="view-documents" hidden>
@@ -63,12 +69,19 @@
     <div id="doc-detail" class="card" hidden></div>
   </section>
 
+  <section id="view-settings" hidden>
+    <h1>Settings</h1>
+    <div id="settings-accounts"></div>
+    <div id="settings-embeddings" class="settings-block"></div>
+    <div id="settings-security" class="settings-block"></div>
+  </section>
+
   <section id="view-connect" hidden>
     <h1>Connect an AI assistant</h1>
     <p class="muted">TrustDesk exposes your knowledge base as an MCP server so tools like Claude Code, VS Code or Codex can search it.</p>
     <ol class="steps">
-      <li>Set your key in the environment where the client runs:
-        <pre class="code"><code>export TRUSTDESK_API_KEY=&lt;your key&gt;</code></pre></li>
+      <li>Create a <strong>read-only API token</strong> under Settings, then API tokens. Put it in the environment where the client runs:
+        <pre class="code"><code>export TRUSTDESK_TOKEN=&lt;your token&gt;</code></pre></li>
       <li>Pick your client and apply the configuration:
         <div class="row left"><label for="client">Client</label><select id="client"></select></div>
         <p id="client-where" class="muted"></p>

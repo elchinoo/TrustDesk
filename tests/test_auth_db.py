@@ -95,7 +95,7 @@ def test_first_run_setup_flow(client):
 
     code = auth.setup_code()
     assert client.post("/api/setup", json={"code": "WRONG-CODE-0000", "password": PASSWORD}, headers=H).status_code == 403
-    assert client.post("/api/setup", json={"code": code, "password": "short"}, headers=H).status_code == 422
+    assert client.post("/api/setup", json={"code": code, "password": "short"}, headers=H).status_code == 422  # pragma: allowlist secret
 
     r = client.post("/api/setup", json={"code": code, "password": PASSWORD}, headers=H)
     assert r.status_code == 200
@@ -106,14 +106,14 @@ def test_first_run_setup_flow(client):
 
     # setup cannot be repeated, even with a valid code
     client.cookies.clear()
-    assert client.post("/api/setup", json={"code": code, "password": "another-long-pass"}, headers=H).status_code == 403
+    assert client.post("/api/setup", json={"code": code, "password": "another-long-pass"}, headers=H).status_code == 403  # pragma: allowlist secret
     assert client.get("/api/session").json()["state"] == "logged_out"
 
 
 def test_login_logout_and_wrong_password(client):
     with connect() as c:
         auth.set_admin_password(c, PASSWORD)
-    assert client.post("/api/login", json={"password": "wrong-password-xx"}, headers=H).status_code == 401
+    assert client.post("/api/login", json={"password": "wrong-password-xx"}, headers=H).status_code == 401  # pragma: allowlist secret
     assert client.post("/api/login", json={"password": PASSWORD}, headers=H).status_code == 200
     assert client.get("/api/session").json()["state"] == "logged_in"
     assert client.post("/api/logout", headers=H).status_code == 200
@@ -124,7 +124,7 @@ def test_login_logout_and_wrong_password(client):
 def test_login_rate_limit(client):
     with connect() as c:
         auth.set_admin_password(c, PASSWORD)
-    codes = [client.post("/api/login", json={"password": "nope-nope-nope-1"}, headers=H).status_code for _ in range(12)]
+    codes = [client.post("/api/login", json={"password": "nope-nope-nope-1"}, headers=H).status_code for _ in range(12)]  # pragma: allowlist secret
     assert codes[:10] == [401] * 10 and codes[10:] == [429, 429]
     assert client.post("/api/login", json={"password": PASSWORD}, headers=H).status_code == 429
 
@@ -137,7 +137,8 @@ def test_restart_locks_vault_until_password(client):
     vault.lock()  # simulates a process restart: the session cookie survives, the in-memory key does not
     s = client.get("/api/session").json()
     assert s["state"] == "logged_in" and s["vault"] == {"initialized": True, "unlocked": False, "auto_unlock": False}
-    assert client.post("/api/vault/unlock", json={"password": "wrong-password-xx"}, headers=H).status_code == 401
+    assert client.post("/api/vault/unlock", json={"password": "wrong-password-xx"}, headers=H).status_code == 403  # pragma: allowlist secret
+    assert client.get("/api/session").json()["state"] == "logged_in"  # a wrong password must not end the session
     assert client.post("/api/vault/unlock", json={"password": PASSWORD}, headers=H).status_code == 200
     assert client.get("/api/session").json()["vault"]["unlocked"] is True
 
@@ -150,7 +151,7 @@ def test_password_change_signs_everyone_out(client):
     assert client.post("/api/admin-password", json={"current": PASSWORD, "new": "brand-new-password"}, headers=H).status_code == 200
     assert client.get("/api/session").json()["state"] == "logged_out"
     assert client.post("/api/login", json={"password": PASSWORD}, headers=H).status_code == 401
-    assert client.post("/api/login", json={"password": "brand-new-password"}, headers=H).status_code == 200
+    assert client.post("/api/login", json={"password": "brand-new-password"}, headers=H).status_code == 200  # pragma: allowlist secret
 
 
 def test_reset_admin_recovery(client):

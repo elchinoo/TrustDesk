@@ -91,7 +91,7 @@ def test_keys_are_encrypted_and_never_returned(admin):
 
 
 def test_validation_and_duplicates(admin):
-    assert new_account(admin, base_url="https://user:pw@llm.example/v1").status_code == 422
+    assert new_account(admin, base_url="https://user:pw@llm.example/v1").status_code == 422  # pragma: allowlist secret
     assert new_account(admin, base_url="ftp://llm.example/v1").status_code == 422
     assert new_account(admin, provider="nope").status_code == 422
     assert new_account(admin).status_code == 200
