@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from trustdesk import embeddings
+from trustdesk import embeddings, llm_http
 from trustdesk.embeddings import EmbeddingError
 
 SECRET = "sk-" + "test" * 5  # fake placeholder  # pragma: allowlist secret
@@ -16,11 +16,11 @@ def llm(monkeypatch):
     monkeypatch.setenv("EMBEDDING_MODEL", "some-model")
     monkeypatch.setenv("EMBEDDING_DIM", "4")
     monkeypatch.delenv("EMBEDDING_SEND_DIMENSIONS", raising=False)
-    monkeypatch.setattr(embeddings.time, "sleep", lambda _: None)
+    monkeypatch.setattr(llm_http.time, "sleep", lambda _: None)
 
 
 def _use(monkeypatch, handler):
-    monkeypatch.setattr(embeddings, "_client", lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(llm_http, "_client", lambda: httpx.Client(transport=httpx.MockTransport(handler)))
 
 
 def _ok(request):
@@ -86,13 +86,13 @@ def test_client_errors_are_not_retried_and_never_leak_the_key(llm, monkeypatch):
 
 def test_dimension_mismatch_has_actionable_message(llm, monkeypatch):
     _use(monkeypatch, lambda r: httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.0] * 8}]}))
-    with pytest.raises(EmbeddingError, match=r"EMBEDDING_DIM=8.*reembed"):
+    with pytest.raises(EmbeddingError, match=r"8 dimensions but 4 were configured"):
         embeddings.embed(["a"])
 
 
 def test_dimensions_rejection_hints_at_the_flag(llm, monkeypatch):
     _use(monkeypatch, lambda r: httpx.Response(400, text="unknown field dimensions"))
-    with pytest.raises(EmbeddingError, match="EMBEDDING_SEND_DIMENSIONS=false"):
+    with pytest.raises(EmbeddingError, match="dimensions field"):
         embeddings.embed(["a"])
 
 

@@ -4,6 +4,7 @@ Results always carry provenance (document, version, heading, per-signal ranks) s
 """
 from pgvector import Vector
 
+from . import embedcfg
 from .db import connect_vector
 from .embeddings import embed
 
@@ -42,10 +43,11 @@ LIMIT %(limit)s
 
 def hybrid_search(query: str, *, org_id: str = "default", doc_type: str | None = None,
                   limit: int = 5, candidates: int = 30, conn=None) -> list[dict]:
-    qv = embed([query])[0]
     own = conn is None
     conn = conn or connect_vector()
     try:
+        embedcfg.ensure_loaded(conn)
+        qv = embed([query])[0]
         rows = conn.execute(
             _SQL,
             {"qv": Vector(qv), "q": query, "org": org_id, "doc_type": doc_type, "k": candidates,

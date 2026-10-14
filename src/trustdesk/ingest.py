@@ -5,8 +5,8 @@ from pathlib import Path
 
 from pgvector import Vector
 
+from . import embedcfg
 from .chunking import chunk_markdown
-from .config import get_settings
 from .db import connect_vector
 from .embeddings import embed
 
@@ -54,7 +54,9 @@ def ingest_text(
         chunks = chunk_markdown(text)
         if not chunks:
             return {"doc_id": None, "chunks": 0, "status": "empty"}
-        vectors = embed([f"{c.heading}\n{c.body}" for c in chunks])
+        embedcfg.ensure_loaded(conn)
+        cfg = embedcfg.current()
+        vectors = embed([f"{c.heading}\n{c.body}" for c in chunks], cfg)
         doc = conn.execute(
             "INSERT INTO kb_document (org_id, title, source, doc_type, version, sha256) "
             "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
@@ -65,11 +67,10 @@ def ingest_text(
                 "INSERT INTO kb_chunk (doc_id, org_id, ord, heading, body, embedding) VALUES (%s,%s,%s,%s,%s,%s)",
                 [(doc["id"], org_id, i, c.heading, c.body, Vector(v)) for i, (c, v) in enumerate(zip(chunks, vectors))],
             )
-        s = get_settings()
         conn.execute(
             "INSERT INTO kb_embedding_model (id, name, dim) VALUES (1,%s,%s) "
             "ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, dim=EXCLUDED.dim",
-            (s.embedding_model if s.llm_base_url else "builtin-hash", s.embedding_dim),
+            (cfg.label, cfg.dim),
         )
         conn.commit()
         return {"doc_id": doc["id"], "chunks": len(chunks), "status": "ingested", "version": version}

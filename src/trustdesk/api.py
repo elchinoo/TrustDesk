@@ -10,12 +10,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from . import __version__, auth, vault
+from . import __version__, accounts, auth, embedcfg, reembed_job, vault
+from . import ask as asker
 from .auth import Principal
 from .config import get_settings
-from .db import connect
+from .db import connect, connect_vector
+from .embeddings import embed as embed_texts
 from .ingest import ingest_file, ingest_text, parse_bytes, safe_source_name
+from .llm_http import LLMError
 from .mcp_server import mcp
+from .netguard import UnsafeURL
 from .search import hybrid_search
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -184,6 +188,27 @@ app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
+
+@contextlib.contextmanager
+def _translate():
+    """Map domain failures to honest HTTP statuses without leaking internals or secrets."""
+    try:
+        yield
+    except vault.VaultLocked as exc:
+        raise HTTPException(423, str(exc)) from exc  # 423 Locked: sign in / unlock to continue
+    except vault.VaultError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (accounts.AccountError, UnsafeURL, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except LLMError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+def idle() -> None:
+    if reembed_job.running():
+        raise HTTPException(503, "re-embedding is in progress; search and uploads are paused until it finishes")
+
+
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "version": __version__}
@@ -199,13 +224,14 @@ def readyz():
         return JSONResponse({"status": "waking-database"}, status_code=503)
 
 
-@app.get("/api/search", dependencies=[Depends(require("read"))])
+@app.get("/api/search", dependencies=[Depends(require("read")), Depends(idle)])
 def search(q: str = Query(min_length=1, max_length=MAX_QUERY), limit: int = Query(5, ge=1, le=20),
            doc_type: str | None = Query(None, max_length=50)):
-    return {"query": q, "results": hybrid_search(q, limit=limit, doc_type=doc_type)}
+    with _translate():
+        return {"query": q, "results": hybrid_search(q, limit=limit, doc_type=doc_type)}
 
 
-@app.post("/api/documents", dependencies=[Depends(require("full"))])
+@app.post("/api/documents", dependencies=[Depends(require("full")), Depends(idle)])
 async def upload_document(file: UploadFile = File(...), doc_type: str = Query("policy", max_length=50)):
     data = await file.read(MAX_UPLOAD + 1)  # bounded read: never buffer more than the limit
     if len(data) > MAX_UPLOAD:
@@ -217,7 +243,8 @@ async def upload_document(file: UploadFile = File(...), doc_type: str = Query("p
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - malformed PDFs raise many pypdf-specific errors
         raise HTTPException(422, "could not parse file") from exc
-    return ingest_text(title=name.rsplit(".", 1)[0], source=name, text=text, doc_type=doc_type)
+    with _translate():
+        return ingest_text(title=name.rsplit(".", 1)[0], source=name, text=text, doc_type=doc_type)
 
 
 @app.get("/api/documents", dependencies=[Depends(require("read"))])
@@ -253,13 +280,11 @@ def delete_document(doc_id: int):
     return {"deleted": doc_id}
 
 
-@app.post("/api/seed", dependencies=[Depends(require("full"))])
+@app.post("/api/seed", dependencies=[Depends(require("full")), Depends(idle)])
 def load_demo_pack():
     """Load the packaged fictional demo policies. Idempotent: unchanged files are skipped."""
-    from .db import connect_vector
-
     results = []
-    with connect_vector() as conn:
+    with _translate(), connect_vector() as conn:
         for f in sorted(SEED_PACK.glob("*.md")):
             r = ingest_file(f, conn=conn)
             results.append({"source": f.name, "status": r["status"], "chunks": r["chunks"]})
@@ -268,13 +293,13 @@ def load_demo_pack():
 
 @app.get("/api/stats", dependencies=[Depends(require("read"))])
 def stats():
-    s = get_settings()
     with connect() as conn:
+        embedcfg.ensure_loaded(conn)
         row = conn.execute(
             "SELECT (SELECT count(*) FROM kb_document) AS documents, (SELECT count(*) FROM kb_chunk) AS chunks"
         ).fetchone()
-    row["embedder"] = s.embedding_model if s.llm_base_url else "builtin-hash"
-    row["semantic"] = bool(s.llm_base_url)
+    cfg = embedcfg.current()
+    row.update(embedder=cfg.label, semantic=cfg.semantic, dimension=cfg.dim, reembedding=reembed_job.running())
     return row
 
 
@@ -446,6 +471,133 @@ def revoke_token(token_id: int):
         if not auth.revoke_token(conn, token_id):
             raise HTTPException(404, "token not found or already revoked")
     return {"revoked": token_id}
+
+
+# --- provider accounts, embeddings, ask ------------------------------------------------------------
+
+class AccountBody(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    provider: str = Field(default="custom", max_length=20)
+    base_url: str = Field(max_length=300)
+    api_key: str | None = Field(default=None, max_length=512)
+    clear_key: bool = False
+    chat_model: str | None = Field(default=None, max_length=120)
+    embedding_model: str | None = Field(default=None, max_length=120)
+    embedding_dim: int | None = Field(default=None, ge=8, le=2000)
+
+
+class TestBody(BaseModel):
+    target: str = Field(pattern="^(chat|embeddings)$")
+
+
+class ActivateBody(BaseModel):
+    account: str = Field(pattern=r"^(env|\d{1,12})$")
+
+
+class AskBody(BaseModel):
+    question: str = Field(min_length=3, max_length=1000)
+    account: str = Field(pattern=r"^(env|\d{1,12})$")
+    limit: int = Field(default=6, ge=1, le=10)
+
+
+def _ref(value: str) -> int | str:
+    return value if value == "env" else int(value)
+
+
+@app.get("/api/providers", dependencies=[Depends(require("read"))])
+def providers():
+    return accounts.PRESETS
+
+
+@app.get("/api/accounts", dependencies=[Depends(require("full"))])
+def list_accounts():
+    with connect() as conn:
+        embedcfg.ensure_loaded(conn)
+        return {"accounts": accounts.list_accounts(conn), "env": accounts.env_account(),
+                "vault": vault.status(conn), "active_embedding": accounts.active_embedding_ref(conn)}
+
+
+@app.post("/api/accounts", dependencies=[Depends(require("full"))])
+def create_account(body: AccountBody):
+    with _translate(), connect() as conn:
+        new_id = accounts.create(conn, name=body.name, provider=body.provider, base_url=body.base_url,
+                                 api_key=body.api_key, chat_model=body.chat_model,
+                                 embedding_model=body.embedding_model, embedding_dim=body.embedding_dim)
+        return accounts.get_account(conn, new_id)
+
+
+@app.put("/api/accounts/{account_id}", dependencies=[Depends(require("full")), Depends(idle)])
+def update_account(account_id: int, body: AccountBody):
+    with _translate(), connect() as conn:
+        accounts.update(conn, account_id, name=body.name, provider=body.provider, base_url=body.base_url,
+                        api_key=body.api_key, clear_key=body.clear_key, chat_model=body.chat_model,
+                        embedding_model=body.embedding_model, embedding_dim=body.embedding_dim)
+        return accounts.get_account(conn, account_id)
+
+
+@app.delete("/api/accounts/{account_id}", dependencies=[Depends(require("full"))])
+def delete_account(account_id: int):
+    with _translate(), connect() as conn:
+        embedcfg.ensure_loaded(conn)
+        accounts.delete(conn, account_id)
+    return {"deleted": account_id}
+
+
+@app.post("/api/accounts/{account}/test", dependencies=[Depends(require("full"))])
+def test_account(account: str, body: TestBody):
+    """Make one tiny real call to the provider so mistakes (URL, key, model name) show up immediately."""
+    if account != "env" and not account.isdigit():
+        raise HTTPException(422, "invalid account")
+    started = time.monotonic()
+    with _translate(), connect() as conn:
+        if body.target == "chat":
+            reply = asker.chat(accounts.chat_config_for(conn, _ref(account)),
+                               [{"role": "user", "content": "Reply with the single word OK."}], max_tokens=8)
+            detail = {"reply": reply["text"][:60]}
+        else:
+            cfg = (embedcfg.from_env() if account == "env" else accounts.embedding_config_for(conn, int(account)))
+            vec = embed_texts(["connection test"], cfg)[0]
+            detail = {"dimensions": len(vec), "model": cfg.model}
+    return {"ok": True, "ms": int((time.monotonic() - started) * 1000), **detail}
+
+
+@app.get("/api/embeddings/status", dependencies=[Depends(require("read"))])
+def embeddings_status():
+    with connect() as conn:
+        embedcfg.ensure_loaded(conn)
+    cfg = embedcfg.current()
+    return {"job": reembed_job.status(),
+            "active": {"account": "env" if cfg.account_id is None else cfg.account_id, "model": cfg.label,
+                       "dimension": cfg.dim, "semantic": cfg.semantic}}
+
+
+@app.post("/api/embeddings/activate", dependencies=[Depends(require("full")), Depends(idle)])
+def activate_embeddings(body: ActivateBody):
+    """Use an account for embeddings. If the model or vector size changes, every chunk is re-embedded in the
+    background (progress via /api/embeddings/status); nothing is changed unless the provider call works."""
+    with _translate(), connect() as conn:
+        embedcfg.ensure_loaded(conn)
+        target = embedcfg.from_env() if body.account == "env" else accounts.embedding_config_for(conn, int(body.account))
+        current = embedcfg.current()
+        embed_texts(["connection test"], target)  # fail fast with a clear message before touching any data
+        same = (target.base_url, target.model, target.dim) == (current.base_url, current.model, current.dim)
+        if same:
+            embedcfg.store.put(conn, embedcfg.SETTING, "" if target.account_id is None else str(target.account_id))
+            conn.commit()
+            embedcfg.set_active(None if target.account_id is None else target)
+            return {"started": False, "message": "already using this embedding model; nothing to re-embed"}
+    try:
+        reembed_job.start(target)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"started": True, "message": "re-embedding started"}
+
+
+@app.post("/api/ask", dependencies=[Depends(require("full")), Depends(idle)])
+def ask_question(body: AskBody):
+    with _translate(), connect_vector() as conn:
+        cfg = accounts.chat_config_for(conn, _ref(body.account))
+        return asker.answer(conn, body.question.strip(), cfg, limit=body.limit)
 
 
 @app.get("/")

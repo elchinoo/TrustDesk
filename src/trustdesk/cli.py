@@ -94,14 +94,15 @@ def _start() -> int:
               "  agentpg extensions create <instance-id> pg_trgm", file=sys.stderr)
         return 1
     print("migrations applied:", ", ".join(applied) if applied else "none (up to date)")
-    from .config import get_settings
+    from . import embedcfg
     from .migrate import column_dim
 
     with connect() as conn:
         have = column_dim(conn)
-    want = get_settings().embedding_dim
+        embedcfg.ensure_loaded(conn)
+    want = embedcfg.current().dim
     if have is not None and have != want:
-        print(f"startup failed: the database stores {have}-dimension vectors but EMBEDDING_DIM={want}.\n"
+        print(f"startup failed: the database stores {have}-dimension vectors but the configured embedder uses {want}.\n"
               f"Set EMBEDDING_DIM={have} to match, or run `trustdesk reembed` to convert the index to {want}.",
               file=sys.stderr)
         return 1
