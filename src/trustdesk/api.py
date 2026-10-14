@@ -157,6 +157,11 @@ class Guard(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         path = request.url.path
+        if path == "/mcp":
+            # Serve the bare path directly: the mount would answer with a redirect, and behind a TLS-terminating
+            # proxy that redirect can point at http://, where clients (rightly) drop the Authorization header.
+            request.scope["path"] = request.scope["raw_path"] = "/mcp/"
+            path = "/mcp/"
         if path.startswith("/mcp"):
             try:
                 principal = authenticate(request, allow_cookie=False)  # MCP never accepts cookies

@@ -200,3 +200,14 @@ def test_mcp_ignores_cookies_and_accepts_tokens(client):
     client.cookies.clear()
     r = client.post("/mcp/", json={}, headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code != 401
+
+
+def test_mcp_bare_path_does_not_redirect(client):
+    with connect() as c:
+        auth.set_admin_password(c, PASSWORD)
+    client.post("/api/login", json={"password": PASSWORD}, headers=H)
+    tok = client.post("/api/tokens", json={"name": "bare", "scope": "read"}, headers=H).json()["token"]
+    client.cookies.clear()
+    assert client.post("/mcp", json={}, follow_redirects=False).status_code == 401
+    r = client.post("/mcp", json={}, headers={"Authorization": f"Bearer {tok}"}, follow_redirects=False)
+    assert r.status_code not in (301, 302, 307, 308, 401)
