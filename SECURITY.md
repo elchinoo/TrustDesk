@@ -19,3 +19,4 @@ affected version or commit.
 - The container runs as a non-root user. Interactive API docs are disabled; the UI is served with a strict
   Content-Security-Policy and no inline script.
 - Run behind TLS. The app itself does not terminate TLS.
+- With an external embeddings provider configured, document text and search queries are sent to that provider. Choose a provider you trust with that data. Provider errors are reported without echoing your API key.

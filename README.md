@@ -52,7 +52,66 @@ curl -H "Authorization: Bearer $KEY" -F file=@policy.md http://localhost:8000/ap
 
 ### Embeddings
 
-With `LLM_BASE_URL` empty, a built-in **hash embedder** is used so the demo runs with no credentials. It matches on words, not meaning. For semantic search point `LLM_BASE_URL` at any OpenAI-compatible endpoint and set `LLM_API_KEY`, `EMBEDDING_MODEL` and `EMBEDDING_DIM`. The vector dimension is fixed when migrations first run, so changing it requires a fresh schema.
+With `LLM_BASE_URL` empty, a built-in demo embedder is used so everything runs with no credentials. It matches on words, not meaning. For real semantic search, see [Using external LLMs](#using-external-llms-openai-openrouter-glm-kimi-claude-and-others).
+
+## Using external LLMs (OpenAI, OpenRouter, GLM, Kimi, Claude and others)
+
+There are two different jobs a language model can do here, and they are configured in different places.
+
+| Job | Who does it today | How to choose the model |
+|---|---|---|
+| **Embeddings**: turning documents and questions into vectors for search | TrustDesk calls an **OpenAI-compatible `/embeddings` endpoint** | Environment variables below |
+| **Answering**: reading the retrieved passages and writing the reply | **Your AI assistant**, through [MCP](#using-the-mcp-server). TrustDesk does not call a chat model itself yet | Whatever model your client uses (Claude Code uses Claude, Codex uses OpenAI models, and so on). Other clients let you pick a provider |
+
+So to "use Claude, Kimi or GLM" for answers, connect a client that runs that model. To use a hosted model for search quality, configure embeddings as follows.
+
+### Configure embeddings
+
+```bash
+LLM_BASE_URL=https://api.openai.com/v1      # the provider's base URL; TrustDesk appends /embeddings
+LLM_API_KEY=<provider key>                  # or mount it as a file (see below)
+EMBEDDING_MODEL=text-embedding-3-small      # the provider's embedding model name
+EMBEDDING_DIM=768                           # vector size to store; see the notes below
+```
+
+| Provider | `LLM_BASE_URL` | Example `EMBEDDING_MODEL` | Notes |
+|---|---|---|---|
+| OpenAI | `https://api.openai.com/v1` | `text-embedding-3-small` | Supports choosing the output size, so `EMBEDDING_DIM=768` works. |
+| OpenRouter | `https://openrouter.ai/api/v1` | `openai/text-embedding-3-small`, `qwen/qwen3-embedding-0.6b` | Has an OpenAI-style embeddings endpoint (`POST /embeddings`) with an optional `dimensions` field. Model list: `GET https://openrouter.ai/api/v1/embeddings/models`. |
+| Zhipu GLM | `https://open.bigmodel.cn/api/paas/v4` | `embedding-3` | Documented as OpenAI-compatible. `dimensions` is supported on `embedding-3` and later only. Note the `/v4` path, not `/v1`. |
+| Moonshot Kimi | `https://api.moonshot.ai/v1` | none | Its OpenAI-compatible API is documented for **chat**. We could not confirm an embeddings endpoint, so use another provider above for embeddings and Kimi (via a client that supports it) for answering. |
+| Anthropic Claude | none | none | Anthropic does not offer an embedding model and points to Voyage AI, whose API is **not** OpenAI-compatible. Use another provider for embeddings; use Claude through an MCP client such as Claude Code for answering. |
+| Self-hosted (Ollama, vLLM, LiteLLM proxy) | for example `http://localhost:11434/v1` | the model you serve | Anything exposing `POST {base}/embeddings` in the OpenAI format works. |
+
+> [!NOTE]
+> These providers were checked against their public documentation only. TrustDesk's request format is covered by automated tests against a mock server, but it has **not** been run against each live provider. Test with a few documents first.
+
+**Choosing `EMBEDDING_DIM`:**
+- It must match what the model returns. If it doesn't, TrustDesk stops with the number the model actually returned.
+- The default is 768. The index supports at most 2000 dimensions, so models that default to larger vectors (for example 3072) must be asked for a smaller size.
+- If the provider rejects the `dimensions` field, set `EMBEDDING_SEND_DIMENSIONS=false` and set `EMBEDDING_DIM` to the model's native size.
+
+**Switching models later.** Vectors from different models are not comparable, so after changing `LLM_BASE_URL`, `EMBEDDING_MODEL` or `EMBEDDING_DIM`, re-embed everything once:
+
+```bash
+trustdesk reembed      # changes the vector size if needed, re-embeds every chunk, rebuilds the index
+```
+
+Search is unavailable while it runs, and it is all-or-nothing: if the provider fails midway, nothing changes. On start, TrustDesk refuses to run if `EMBEDDING_DIM` doesn't match the stored vectors, and tells you to match it or run `trustdesk reembed`.
+
+**Keeping the key out of the environment.** If your platform can only mount files, put the key in `/etc/trustdesk/llm_api_key` (or point `LLM_API_KEY_FILE` at another path). The environment variable wins if both are set.
+
+**Privacy.** With an external provider, the text of every document chunk and every search query is sent to that provider. Don't enable it for documents you aren't allowed to share with them, and check the provider's data-retention terms.
+
+**On AgentPG sandboxes.** The documented ways to give a sandbox settings are `--file` (mount a file) and `--command`. AgentPG can also store provider keys on your account, but its docs don't say how they reach a sandbox, so don't rely on that. A pattern that fits the documented options, **not yet verified end to end**: mount the key as a file and pass the non-secret settings through the command:
+
+```bash
+agentpg sandbox create trustdesk --image ghcr.io/<owner>/trustdesk:latest --instance <instance-id> --port 8000 \
+  --file /etc/trustdesk/llm_api_key=$HOME/llm_api_key \
+  --command "env LLM_BASE_URL=https://api.openai.com/v1 EMBEDDING_MODEL=text-embedding-3-small EMBEDDING_DIM=768 trustdesk start"
+```
+
+Do not put the key itself in `--command`: command lines are easy to leak. After the first start, check `agentpg sandbox logs <sandbox-id>` for errors, and use `agentpg sandbox console <sandbox-id>` to run `trustdesk reembed` if you changed models on an existing database.
 
 ## Using the web app
 
@@ -307,7 +366,8 @@ Notes:
 | `TRUSTDESK_ALLOW_ANONYMOUS` | `false` | `true` disables authentication. Throwaway local demos only. |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address. |
 | `AUTO_SEED` | `false` | With `trustdesk start`, load the demo pack if the knowledge base is empty. |
-| `LLM_BASE_URL`, `LLM_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM` | empty / empty / `text-embedding-3-small` / `768` | Embeddings endpoint. |
+| `LLM_BASE_URL`, `LLM_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM` | empty / empty / `text-embedding-3-small` / `768` | Embeddings endpoint; see [Using external LLMs](#using-external-llms-openai-openrouter-glm-kimi-claude-and-others). `LLM_API_KEY` can come from a file (`LLM_API_KEY_FILE`, default `/etc/trustdesk/llm_api_key`). |
+| `EMBEDDING_SEND_DIMENSIONS` | `true` | Set `false` if the provider rejects the `dimensions` request field. |
 
 ## Container image
 
@@ -370,7 +430,11 @@ Then reload the page and sign in again with the current key.
 
 ### My API key stopped working after a restart
 
-Without a configured key, TrustDesk generates a random one at every start and prints it once in the logs. Resuming a paused sandbox is a restart, so the key changes. Read the new key from the logs, or configure a fixed one with `TRUSTDESK_API_KEY`, or by mounting a file at `/etc/trustdesk/api_key` (see [Configuration](#configuration)). If the file exists but can't be read by the container's non-root user, the logs print `WARNING: cannot read API key file` and the app falls back to a generated key. A mounted key file has not been confirmed to work on AgentPG sandboxes; check the logs after your first start.
+Without a configured key, TrustDesk generates a random one at every start and prints it once in the logs. Resuming a paused sandbox is a restart, so the key changes. Read the new key from the logs, or configure a fixed one with `TRUSTDESK_API_KEY`, or by mounting a file at `/etc/trustdesk/api_key` (see [Configuration](#configuration)). If the file exists but can't be read by the container's non-root user, the logs print `WARNING: cannot read ... file` and the app falls back to a generated key. On an AgentPG sandbox the mounted file appeared as `-rwxr----- app root` (owned by the container's `app` user), so it is readable. If the logs nevertheless show `Generated a key`, the file was probably not in place when the process started; resume the sandbox once and check the logs again. To check without printing the key, run inside `agentpg sandbox console <sandbox-id>`:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat /etc/trustdesk/api_key)" http://localhost:8000/api/stats   # 200 = the file key is accepted
+```
 
 ### What survives a pause
 

@@ -12,26 +12,28 @@ class Settings:
     embedding_model: str
     embedding_dim: int
     allow_anonymous: bool
+    send_dimensions: bool
 
 
-API_KEY_FILE = "/etc/trustdesk/api_key"
-
-
-def _api_key() -> str:
-    """Key from TRUSTDESK_API_KEY, else the first line of TRUSTDESK_API_KEY_FILE (default
-    /etc/trustdesk/api_key) so platforms that can only mount files can still supply one."""
-    key = os.environ.get("TRUSTDESK_API_KEY", "")
-    if key:
-        return key
-    path = os.environ.get("TRUSTDESK_API_KEY_FILE", API_KEY_FILE)
+def _secret(env: str, default_file: str) -> str:
+    """Secret from the environment variable, else the first line of the file named by <ENV>_FILE
+    (default path given), so platforms that can only mount files can still supply it."""
+    value = os.environ.get(env, "")
+    if value:
+        return value
+    path = os.environ.get(f"{env}_FILE", default_file)
     try:
         with open(path) as fh:
             return fh.readline().strip()
     except FileNotFoundError:
         return ""
     except OSError as exc:  # exists but unreadable, e.g. root-only file and a non-root container user
-        print(f"WARNING: cannot read API key file {path}: {exc.strerror}", file=sys.stderr)
+        print(f"WARNING: cannot read {env} file {path}: {exc.strerror}", file=sys.stderr)
         return ""
+
+
+def _api_key() -> str:
+    return _secret("TRUSTDESK_API_KEY", "/etc/trustdesk/api_key")
 
 
 def get_settings() -> Settings:
@@ -44,8 +46,10 @@ def get_settings() -> Settings:
         or "",
         api_key=_api_key(),
         llm_base_url=os.environ.get("LLM_BASE_URL", "").rstrip("/"),
-        llm_api_key=os.environ.get("LLM_API_KEY", ""),
+        llm_api_key=_secret("LLM_API_KEY", "/etc/trustdesk/llm_api_key"),
         embedding_model=os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small"),
         embedding_dim=int(os.environ.get("EMBEDDING_DIM", "768")),
         allow_anonymous=os.environ.get("TRUSTDESK_ALLOW_ANONYMOUS", "").lower() in {"1", "true", "yes"},
+        # Some providers reject an unknown `dimensions` field; set EMBEDDING_SEND_DIMENSIONS=false for them.
+        send_dimensions=os.environ.get("EMBEDDING_SEND_DIMENSIONS", "true").lower() not in {"0", "false", "no"},
     )

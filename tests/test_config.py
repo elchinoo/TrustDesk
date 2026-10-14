@@ -30,3 +30,14 @@ def test_api_key_from_env_then_file(monkeypatch, tmp_path):
     monkeypatch.delenv("TRUSTDESK_API_KEY")
     monkeypatch.setenv("TRUSTDESK_API_KEY_FILE", str(tmp_path / "missing"))
     assert get_settings().api_key == ""
+
+
+def test_llm_key_from_file(monkeypatch, tmp_path):
+    for v in ("LLM_API_KEY", "LLM_API_KEY_FILE"):
+        monkeypatch.delenv(v, raising=False)
+    f = tmp_path / "llm"
+    f.write_text("file-llm-key\n")
+    monkeypatch.setenv("LLM_API_KEY_FILE", str(f))
+    assert get_settings().llm_api_key == "file-llm-key"  # pragma: allowlist secret
+    monkeypatch.setenv("LLM_API_KEY", "env-llm-key")
+    assert get_settings().llm_api_key == "env-llm-key"  # pragma: allowlist secret

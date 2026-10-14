@@ -16,6 +16,7 @@ def main(argv: list[str] | None = None) -> int:
     q = sub.add_parser("search", help="hybrid search from the terminal")
     q.add_argument("query")
     q.add_argument("-n", type=int, default=5)
+    sub.add_parser("reembed", help="re-embed all chunks after changing the embedding model or EMBEDDING_DIM")
     sub.add_parser("serve", help="run the API + MCP server")
     sub.add_parser("start", help="container entrypoint: migrate, optionally seed (AUTO_SEED=true), serve")
     args = p.parse_args(argv)
@@ -42,6 +43,16 @@ def main(argv: list[str] | None = None) -> int:
 
         for r in hybrid_search(args.query, limit=args.n):
             print(f"[{r['score']:.4f}] {r['title']} › {r['heading']} (v{r['version']})\n    {r['body'][:160]!r}")
+    elif args.cmd == "reembed":
+        from .embeddings import EmbeddingError
+        from .migrate import reembed
+
+        try:
+            r = reembed()
+        except (EmbeddingError, ValueError, RuntimeError) as exc:
+            print(f"reembed failed (no changes were made): {exc}", file=sys.stderr)
+            return 1
+        print(f"done: {r['chunks']} chunks, vector size {r['dimension']}")
     elif args.cmd == "serve":
         _serve()
     elif args.cmd == "start":
@@ -85,6 +96,17 @@ def _start() -> int:
               "  agentpg extensions create <instance-id> pg_trgm", file=sys.stderr)
         return 1
     print("migrations applied:", ", ".join(applied) if applied else "none (up to date)")
+    from .config import get_settings
+    from .migrate import column_dim
+
+    with connect() as conn:
+        have = column_dim(conn)
+    want = get_settings().embedding_dim
+    if have is not None and have != want:
+        print(f"startup failed: the database stores {have}-dimension vectors but EMBEDDING_DIM={want}.\n"
+              f"Set EMBEDDING_DIM={have} to match, or run `trustdesk reembed` to convert the index to {want}.",
+              file=sys.stderr)
+        return 1
     if os.environ.get("AUTO_SEED", "").lower() in {"1", "true", "yes"}:
         with connect() as conn:
             empty = conn.execute("SELECT NOT EXISTS (SELECT 1 FROM kb_document) AS e").fetchone()["e"]
