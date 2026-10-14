@@ -1,4 +1,5 @@
 import os
+import sys
 from dataclasses import dataclass
 
 
@@ -22,10 +23,14 @@ def _api_key() -> str:
     key = os.environ.get("TRUSTDESK_API_KEY", "")
     if key:
         return key
+    path = os.environ.get("TRUSTDESK_API_KEY_FILE", API_KEY_FILE)
     try:
-        with open(os.environ.get("TRUSTDESK_API_KEY_FILE", API_KEY_FILE)) as fh:
+        with open(path) as fh:
             return fh.readline().strip()
-    except OSError:
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:  # exists but unreadable, e.g. root-only file and a non-root container user
+        print(f"WARNING: cannot read API key file {path}: {exc.strerror}", file=sys.stderr)
         return ""
 
 

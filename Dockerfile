@@ -9,7 +9,8 @@ RUN pip install --no-cache-dir .
 # Bind to all interfaces so a reverse proxy / sandbox can reach the app.
 # The database connection (DB_EXTERNAL_DSN or DATABASE_URL) is supplied at runtime, never baked in.
 ENV HOST=0.0.0.0 \
-    PORT=8000
+    PORT=8000 \
+    PYTHONUNBUFFERED=1
 
 # psycopg-binary bundles its own OpenSSL, whose default CA path is not Debian's,
 # so sslrootcert=system finds no roots. Point it at the system bundle.
