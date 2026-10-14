@@ -10,12 +10,13 @@ class Settings:
     llm_base_url: str
     llm_api_key: str
     embedding_model: str
+    llm_chat_model: str
     embedding_dim: int
     allow_anonymous: bool
     send_dimensions: bool
 
 
-def _secret(env: str, default_file: str) -> str:
+def read_secret(env: str, default_file: str) -> str:
     """Secret from the environment variable, else the first line of the file named by <ENV>_FILE
     (default path given), so platforms that can only mount files can still supply it."""
     value = os.environ.get(env, "")
@@ -33,7 +34,7 @@ def _secret(env: str, default_file: str) -> str:
 
 
 def _api_key() -> str:
-    return _secret("TRUSTDESK_API_KEY", "/etc/trustdesk/api_key")
+    return read_secret("TRUSTDESK_API_KEY", "/etc/trustdesk/api_key")
 
 
 def get_settings() -> Settings:
@@ -46,8 +47,9 @@ def get_settings() -> Settings:
         or "",
         api_key=_api_key(),
         llm_base_url=os.environ.get("LLM_BASE_URL", "").rstrip("/"),
-        llm_api_key=_secret("LLM_API_KEY", "/etc/trustdesk/llm_api_key"),
+        llm_api_key=read_secret("LLM_API_KEY", "/etc/trustdesk/llm_api_key"),
         embedding_model=os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small"),
+        llm_chat_model=os.environ.get("LLM_CHAT_MODEL", ""),
         embedding_dim=int(os.environ.get("EMBEDDING_DIM", "768")),
         allow_anonymous=os.environ.get("TRUSTDESK_ALLOW_ANONYMOUS", "").lower() in {"1", "true", "yes"},
         # Some providers reject an unknown `dimensions` field; set EMBEDDING_SEND_DIMENSIONS=false for them.

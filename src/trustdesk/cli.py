@@ -18,6 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("-n", type=int, default=5)
     sub.add_parser("reembed", help="re-embed all chunks after changing the embedding model or EMBEDDING_DIM")
     sub.add_parser("serve", help="run the API + MCP server")
+    sub.add_parser("reset-admin", help="forget the admin password and delete stored provider keys (recovery)")
     sub.add_parser("start", help="container entrypoint: migrate, optionally seed (AUTO_SEED=true), serve")
     args = p.parse_args(argv)
 
@@ -53,6 +54,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"reembed failed (no changes were made): {exc}", file=sys.stderr)
             return 1
         print(f"done: {r['chunks']} chunks, vector size {r['dimension']}")
+    elif args.cmd == "reset-admin":
+        from . import auth
+        from .db import connect
+
+        with connect() as conn:
+            auth.reset_admin(conn)
+        print("admin password, vault and stored provider keys were cleared; the setup code flow is active again")
     elif args.cmd == "serve":
         _serve()
     elif args.cmd == "start":
@@ -65,16 +73,6 @@ def _serve() -> None:
 
     import uvicorn
 
-    from .config import get_settings
-
-    if not get_settings().api_key and os.environ.get("TRUSTDESK_ALLOW_ANONYMOUS", "").lower() not in {
-        "1", "true", "yes",
-    }:
-        import secrets
-
-        os.environ["TRUSTDESK_API_KEY"] = secrets.token_urlsafe(32)
-        print("TRUSTDESK_API_KEY was not set. Generated a key for this process (it changes on restart):\n"
-              f"  {os.environ['TRUSTDESK_API_KEY']}\nSet TRUSTDESK_API_KEY to choose your own.", file=sys.stderr)
     uvicorn.run("trustdesk.api:app", host=os.environ.get("HOST", "0.0.0.0"), port=int(os.environ.get("PORT", "8000")))
 
 

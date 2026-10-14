@@ -58,4 +58,4 @@ def test_upload_search_and_validation(client):
 def test_endpoints_require_auth(client):
     for method, path in [("get", "/api/stats"), ("post", "/api/seed"), ("get", "/api/documents/1"),
                          ("delete", "/api/documents/1")]:
-        assert getattr(client, method)(path).status_code == 401, path
+        assert getattr(client, method)(path, headers={"X-TrustDesk-CSRF": "1"}).status_code == 401, path
