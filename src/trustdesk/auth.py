@@ -26,7 +26,7 @@ _setup_code: str | None = None
 @dataclass(frozen=True)
 class Principal:
     kind: str   # "session" | "token" | "static" | "anonymous"
-    scope: str  # "full" | "read"
+    scope: str  # "full" | "read" | "metrics"
     ident: int | None = None
 
 
@@ -131,8 +131,8 @@ def delete_session(conn, raw: str | None) -> None:
 
 # ---- API tokens -------------------------------------------------------------------------------
 def create_token(conn, name: str, scope: str) -> tuple[int, str]:
-    if scope not in {"read", "full"}:
-        raise ValueError("scope must be 'read' or 'full'")
+    if scope not in {"read", "metrics", "full"}:
+        raise ValueError("scope must be 'read', 'metrics' or 'full'")
     raw = TOKEN_PREFIX + secrets.token_urlsafe(32)
     row = conn.execute(
         "INSERT INTO api_token (name, token_hash, prefix, scope) VALUES (%s,%s,%s,%s) RETURNING id",

@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from . import __version__, accounts, auth, embedcfg, reembed_job, vault
+from . import __version__, accounts, auth, embedcfg, metrics, reembed_job, vault
 from . import ask as asker
 from .auth import Principal
 from .config import get_settings
@@ -139,14 +139,15 @@ def authenticate(request: Request, *, allow_cookie: bool = True) -> Principal | 
 
 
 def require(scope: str = "read"):
-    """Dependency: the caller must be authenticated with at least `scope` ('read' or 'full')."""
+    """Dependency: the caller must hold `scope`. 'full' (admin session or full token) satisfies everything; a 'read'
+    token only reads and a 'metrics' token only scrapes /metrics."""
 
     def dep(request: Request) -> Principal:
         principal = authenticate(request)
         if principal is None:
             raise HTTPException(401, "authentication required")
-        if scope == "full" and principal.scope != "full":
-            raise HTTPException(403, "this token is read-only")
+        if principal.scope != "full" and principal.scope != scope:
+            raise HTTPException(403, f"this token cannot do that (it is a '{principal.scope}' token)")
         return principal
 
     return dep
@@ -156,6 +157,19 @@ class Guard(BaseHTTPMiddleware):
     """MCP bearer auth (route dependencies don't apply to mounts), CSRF check, and security headers."""
 
     async def dispatch(self, request, call_next):
+        started = time.perf_counter()
+        status = 500
+        try:
+            resp = await self._dispatch(request, call_next)
+            status = resp.status_code
+            return resp
+        finally:
+            route = request.scope.get("route")
+            label = getattr(route, "path", None) or ("/mcp" if request.url.path.startswith("/mcp") else "other")
+            if label != "/metrics":
+                metrics.observe(request.method, label, status, started)
+
+    async def _dispatch(self, request, call_next):
         path = request.url.path
         if path == "/mcp":
             # Serve the bare path directly: the mount would answer with a redirect, and behind a TLS-terminating
@@ -169,6 +183,8 @@ class Guard(BaseHTTPMiddleware):
                 return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
             if principal is None:
                 return JSONResponse({"error": "authentication required"}, status_code=401)
+            if principal.scope == "metrics":  # a scrape-only token never reads the knowledge base
+                return JSONResponse({"error": "metrics tokens cannot use MCP"}, status_code=403)
         elif (path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}
               and _bearer(request) is None and not request.headers.get(CSRF_HEADER)):
             # Cookie-authenticated (browser) writes must carry a custom header, which cross-site pages can't set.
@@ -214,6 +230,12 @@ def idle() -> None:
         raise HTTPException(503, "re-embedding is in progress; search and uploads are paused until it finishes")
 
 
+@app.get("/metrics", dependencies=[Depends(require("metrics"))])
+def prometheus_metrics():
+    body, ctype = metrics.render()
+    return Response(body, media_type=ctype)
+
+
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "version": __version__}
@@ -233,6 +255,7 @@ def readyz():
 def search(q: str = Query(min_length=1, max_length=MAX_QUERY), limit: int = Query(5, ge=1, le=20),
            doc_type: str | None = Query(None, max_length=50)):
     with _translate():
+        metrics.SEARCHES.labels("search").inc()
         return {"query": q, "results": hybrid_search(q, limit=limit, doc_type=doc_type)}
 
 
@@ -331,7 +354,7 @@ class PasswordBody(BaseModel):
 
 class TokenBody(BaseModel):
     name: str = Field(min_length=1, max_length=60)
-    scope: str = Field(pattern="^(read|full)$")
+    scope: str = Field(pattern="^(read|metrics|full)$")
 
 
 def _start_session(conn, request: Request, response: Response) -> None:

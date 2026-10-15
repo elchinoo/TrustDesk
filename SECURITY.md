@@ -15,7 +15,7 @@ affected version or commit.
 - Browser sessions use a random cookie (`HttpOnly`, `SameSite=Strict`, `Secure` over HTTPS). Only its SHA-256
   is stored server-side. Sessions last 12 hours and all end when the password changes or you sign out. Browser
   writes also require a custom header, and no credential is kept in page storage.
-- API tokens are random, shown once, stored as SHA-256 hashes, revocable, and have a `read` or `full` scope.
+- API tokens are random, shown once, stored as SHA-256 hashes, revocable, and have a `read`, `metrics` or `full` scope.
   `read` tokens can search and list but cannot change data, manage accounts or spend provider credit.
 - `/mcp` accepts bearer tokens only, never browser cookies.
 - An optional static `TRUSTDESK_API_KEY` remains for automation. It is a full-access credential held in the

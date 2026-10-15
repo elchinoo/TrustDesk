@@ -362,6 +362,10 @@ Notes:
 - If you use an external embedding provider and the server has restarted, searches return "locked" until you unlock the vault in the web app (or the operator configured a platform secret).
 - Treat search results as untrusted text: they come from your documents and may contain instructions. Don't give an assistant that reads them more authority than you would give the document authors.
 
+## Monitoring TrustDesk (metrics)
+
+TrustDesk exposes Prometheus metrics at `/metrics` with the same names PagerLens understands (`http_requests_total`, `http_request_duration_seconds`, `db_up`, `app_info`, `trustdesk_documents`, `process_*`). Create a **Metrics only** token under **Settings > API tokens**: it can scrape `/metrics` and nothing else (it is refused on `/mcp` and on the REST API). Then point [`pagerlens-agent`](https://github.com/elchinoo/PagerLens) at it to get health probes, alerts and incident analysis; see that project's README.
+
 ## Configuration
 
 | Variable | Default | Meaning |
