@@ -390,9 +390,9 @@ AgentPG sandboxes run any public image and can be linked to a Postgres instance,
 
 ```bash
 agentpg login
-agentpg create <instance-name>                              # or reuse an instance; note its id
-agentpg extensions create <instance-id> vector              # may need elevated rights, so enable them here
-agentpg extensions create <instance-id> pg_trgm
+agentpg create --name <instance-name> --size small           # or reuse an instance; note its id
+agentpg extensions create vector <instance-id>              # may need elevated rights, so enable them here
+agentpg extensions create pg_trgm <instance-id>
 
 agentpg sandbox create trustdesk \
   --image ghcr.io/<owner>/trustdesk:latest \
@@ -408,7 +408,7 @@ Notes:
 - `--port 8000` is required: without it the platform replaces the image's command with an idle process.
 - The image must be **public** on GHCR (package settings > change visibility).
 - Setup is protected by the code in the logs, which only someone who can read the sandbox logs has. Complete setup promptly after creating the sandbox: until then, anyone who finds the URL can try to guess the code (attempts are rate limited).
-- Environment variables cannot be set on a sandbox from the CLI, which is why everything is configured in the browser.
+- `agentpg sandbox create` accepts `--env KEY=VALUE` (repeatable), e.g. `--env AUTO_SEED=true` to load the demo policies on first start. Keep secrets out of it: everything sensitive is configured in the browser, and values passed with `--env` are not a secret store.
 - Free-tier sandboxes auto-pause when idle and do **not** wake on a request: a paused sandbox returns 503 until you run `agentpg sandbox resume`. After a resume, **unlock the provider keys** with your admin password. See [Troubleshooting](#troubleshooting).
 - Optional: the documented way to give a sandbox a file is `--file`. If you want unattended unlock after restarts, mount a platform-managed secret at `/etc/trustdesk/encryption_key`, created outside this repository, and never commit it. The trade-offs are described in [How secrets are handled](#how-secrets-are-handled).
 
