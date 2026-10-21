@@ -2,7 +2,7 @@
 
 <h1 align="center">TrustDesk</h1>
 
-A security-questionnaire knowledge base built on **Postgres + pgvector**, with a web app, a REST API and an **MCP server**. Load your security policies, then search them, or ask a question and get an answer that cites its sources. Every result carries its document, version and heading, so answers can show their evidence.
+A **compliance workspace** built on **Postgres + pgvector**, with a web app, a REST API and an **MCP server**. Load your company rules (HR, travel, expenses, security), let your applications send employee requests (vacation, sick leave, trips, expense reimbursements and anything else), and have every request **pre-validated by an AI model against your own documents** before an approver decides. The advice comes with the reasons and the quoted passages it is based on. You can also search the documents and ask questions that cite their sources.
 
 > [!WARNING]
 > **Hosted sandboxes can pause themselves and then answer `503`.**
@@ -15,7 +15,10 @@ A security-questionnaire knowledge base built on **Postgres + pgvector**, with a
 
 ## Features
 
-- **Web app** at `/`: search with explainable results, **Ask** (an answer with citations from the model you pick), drag-and-drop upload, document viewer, provider accounts, API tokens, and copy-paste MCP setup for ten clients. Light and dark mode; works on phones.
+- **Requests with AI pre-validation:** 19 request types (leave, trips, expenses, remote work, overtime, equipment, anything else). Each new request gets a recommendation (approve, reject, needs information), the reasons, and the policy passages it rests on, with quotes checked word for word against the documents. A person always decides; going against the advice needs a written justification. See [Compliance workflow](#compliance-workflow).
+- **Client API** (`/api/v1`, see [API.md](API.md)) for applications that create employees and send requests, with a token scope that cannot see the AI advice or decide anything.
+- **Reports:** overview, all requests, compliance by type, out of compliance, decisions against AI advice, expenses, leave, ageing and upcoming absences, as tables and CSV.
+- **Web app** at `/`: requests queue and review window, employees, reports, documents, search with explainable results, **Ask** (an answer with citations from the model you pick), drag-and-drop upload, document viewer, provider accounts, API tokens, and copy-paste MCP setup for ten clients. Light and dark mode; works on phones.
 - **Multiple provider accounts** (OpenAI, OpenRouter, GLM, Kimi, Claude, any OpenAI-compatible server), configured in the browser. Choose one for embeddings and one per question.
 - **Hybrid retrieval**: vector and full-text results fused with reciprocal rank fusion (RRF), with provenance on every result.
 - **Safe by default**: no secret files, admin password set on first run, hashed API tokens, encrypted provider keys. See [How secrets are handled](#how-secrets-are-handled).
@@ -117,11 +120,27 @@ You can also configure a single provider from the environment instead of the bro
 
 From a terminal, `trustdesk reembed` re-embeds everything after you change these.
 
+## Compliance workflow
+
+1. **Load the rules.** Under **Documents**, upload your policies (Markdown, text or PDF) and tag them (HR, travel, expense, governance, security). **Load demo policies** adds a fictional "Acme" pack covering vacation, sick and parental leave, remote work, overtime, travel, expenses, customer entertainment and who approves what.
+2. **Connect an AI account.** Add an account with a chat model under **Settings > Provider accounts**, then choose it under **Request validation**. Without one, requests still arrive but without advice.
+3. **Requests arrive** from your applications through the [client API](API.md) or by hand (**New request**). TrustDesk checks the fields, stores the request and starts the pre-validation in the background.
+4. **Pre-validation** (a few seconds). The system computes the facts a model gets wrong when it guesses: working days, notice given, overlapping leave, leave already taken this year, expenses already approved, possible duplicates, missing receipts. It retrieves the policy passages that relate to the request type and the request text, and asks the model for one structured verdict. TrustDesk then checks that verdict before anyone sees it: citations must point at real passages, each quote is matched word for word against the passage and marked verified or not, a "yes" or "no" with no citable basis becomes "needs information", and an approval is not suggested while an automatic check fails (for example an overlap with approved leave).
+5. **The review window** shows the request, the employee, the recommendation, the reasons, the foundation (document, heading, version, quote, full passage), the automatic checks and the history. You **approve**, **reject**, or **ask for information** (which sends the request back to the employee). Rejecting or asking needs a note the employee will see. Approving against a "reject" recommendation, or rejecting against an "approve", needs a written justification and is listed under **Reports > Decisions against AI advice**.
+6. **Reports** cover volumes and outcomes, compliance by request type, anything out of compliance (including requests approved anyway), expenses by department, approved leave, open requests by age and upcoming absences. Each can be downloaded as CSV.
+
+What goes to the AI provider: the request text and details, the system-computed facts (department, job title, level, country, tenure, dates, amounts) and the retrieved policy passages. **Not** names, e-mail addresses or employee numbers. Free text written by an employee can still contain personal data, so use a provider you are allowed to send it to.
+
+Limits worth knowing: the AI only advises and can be wrong, so read the quoted passages. Working days exclude weekends but not public holidays. There is one approver identity (the signed-in admin); there are no per-employee sign-ins, e-mail notifications or receipt uploads, and validation is only as good as the documents you load. Validation quality has been exercised with a scripted stand-in model in tests and for the UI, not benchmarked against real providers.
+
 ## Using the web app
 
+- **Requests:** the queue (open by default) with counts, filters and the review window described above. **New request** adds one on behalf of an employee.
+- **Employees:** add, edit, deactivate; **Requests** jumps to that person's requests.
+- **Reports:** pick a report and dates, run it, print it or download the CSV.
 - **Search:** ask in plain language. Each result shows its document, heading, version and how it ranked in the vector and full-text searches. "Copy citation" copies a ready-to-paste reference.
 - **Ask:** choose an account and ask a question. You get an answer with `[1]`-style citations that jump to the numbered source passages. Treat it as a draft: check the sources.
-- **Documents:** drag files in (Markdown, text, PDF; 10 MB max each). Re-uploading a changed file replaces the old version. **Load demo policies** adds a fictional policy pack. **View** shows how a document was split into chunks.
+- **Documents:** drag files in (Markdown, text, PDF; 10 MB max each), choosing the type first (HR, travel, expense, governance, security or general). Re-uploading a changed file replaces the old version. **Load demo policies** adds a fictional policy pack. **View** shows how a document was split into chunks.
 - **Settings:** provider accounts, which account provides embeddings, your admin password and API tokens.
 - **Connect:** pick your AI client and copy a ready-made configuration with this server's URL filled in.
 
@@ -364,7 +383,7 @@ Notes:
 
 ## Monitoring TrustDesk (metrics)
 
-TrustDesk exposes Prometheus metrics at `/metrics` with the same names PagerLens understands (`http_requests_total`, `http_request_duration_seconds`, `db_up`, `app_info`, `trustdesk_documents`, `process_*`). Create a **Metrics only** token under **Settings > API tokens**: it can scrape `/metrics` and nothing else (it is refused on `/mcp` and on the REST API). Then point [`pagerlens-agent`](https://github.com/elchinoo/PagerLens) at it to get health probes, alerts and incident analysis; see that project's README.
+TrustDesk exposes Prometheus metrics at `/metrics` with the same names PagerLens understands (`http_requests_total`, `http_request_duration_seconds`, `db_up`, `app_info`, `trustdesk_documents`, `process_*`) plus `trustdesk_requests{status}`, `trustdesk_oldest_open_request_seconds`, `trustdesk_validations_total{state,recommendation}` and `trustdesk_validation_duration_seconds`. Create a **Metrics only** token under **Settings > API tokens**: it can scrape `/metrics` and nothing else (it is refused on `/mcp` and on the REST API). Then point [`pagerlens-agent`](https://github.com/elchinoo/PagerLens) at it to get health probes, alerts and incident analysis; see that project's README.
 
 ## Configuration
 

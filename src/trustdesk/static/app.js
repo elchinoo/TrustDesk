@@ -2,13 +2,16 @@ import { api } from "/static/api.js";
 import { initAsk } from "/static/ask.js";
 import { initConnect } from "/static/connect.js";
 import { initDocuments } from "/static/documents.js";
+import { initEmployees } from "/static/employees.js";
+import { initReports } from "/static/reports.js";
+import { initRequests } from "/static/requests.js";
 import { initSearch } from "/static/search.js";
 import { initSettings } from "/static/settings.js";
 import { refreshSession, renderLogin, renderSetup, renderVaultBanner, state } from "/static/session.js";
 import { $, h } from "/static/ui.js";
 
-const TABS = ["search", "ask", "documents", "settings", "connect"];
-const INIT = { search: initSearch, ask: initAsk, documents: initDocuments, settings: initSettings, connect: initConnect };
+const TABS = ["requests", "employees", "reports", "documents", "search", "ask", "settings", "connect"];
+const INIT = { requests: initRequests, employees: initEmployees, reports: initReports, search: initSearch, ask: initAsk, documents: initDocuments, settings: initSettings, connect: initConnect };
 const SECTIONS = ["auth-card", "vault-banner", "nav", "signout", ...TABS.map((t) => "view-" + t)];
 
 // Earlier versions kept the API key in sessionStorage. Nothing writes it any more; remove any leftover.
@@ -46,7 +49,7 @@ function showApp() {
 
 function route() {
   if (!state.session || state.session.state !== "logged_in") return;
-  const tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "search";
+  const tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "requests";
   for (const t of TABS) $("view-" + t).hidden = t !== tab;
   for (const a of document.querySelectorAll("#nav a")) a.classList.toggle("active", a.dataset.tab === tab);
   INIT[tab]();

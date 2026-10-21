@@ -20,7 +20,7 @@ export async function initDocuments() {
       try {
         const d = await api("/api/seed", { method: "POST" });
         const added = d.results.filter((r) => r.status === "ingested").length;
-        toast(added ? `Loaded ${added} demo policies` : "Demo policies already loaded");
+        toast(added ? `Loaded ${added} demo policies (security, HR, travel and expenses)` : "Demo policies already loaded");
         load();
       } catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
     });
@@ -33,6 +33,7 @@ async function load() {
     const docs = await api("/api/documents");
     $("doc-body").replaceChildren(...docs.map((d) => h("tr", {},
       h("td", { class: "title" }, d.title),
+      h("td", {}, h("span", { class: "badge plain" }, d.doc_type)),
       h("td", { class: "source col-source" }, d.source),
       h("td", { class: "num" }, String(d.version)),
       h("td", { class: "num" }, String(d.chunks)),
@@ -75,7 +76,7 @@ async function upload(files) {
     try {
       const form = new FormData();
       form.append("file", f);
-      const r = await api("/api/documents", { method: "POST", body: form });
+      const r = await api("/api/documents?doc_type=" + encodeURIComponent($("doc-type").value), { method: "POST", body: form });
       bar.remove();
       state.className = "ok";
       state.textContent = r.status === "unchanged" ? "Already up to date" : `Added (${r.chunks} chunks)`;

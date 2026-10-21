@@ -10,20 +10,19 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from . import __version__, accounts, auth, embedcfg, metrics, reembed_job, vault
+from . import __version__, accounts, api_v1, auth, embedcfg, metrics, reembed_job, seedpack, vault
 from . import ask as asker
 from .auth import Principal
 from .config import get_settings
 from .db import connect, connect_vector
 from .embeddings import embed as embed_texts
-from .ingest import ingest_file, ingest_text, parse_bytes, safe_source_name
+from .ingest import ingest_text, parse_bytes, safe_source_name
 from .llm_http import LLMError
 from .mcp_server import mcp
 from .netguard import UnsafeURL
 from .search import hybrid_search
 
 STATIC = Path(__file__).resolve().parent / "static"
-SEED_PACK = Path(__file__).resolve().parent / "seed" / "acme"
 MAX_UPLOAD = 10 * 1024 * 1024
 MAX_QUERY = 500
 
@@ -183,8 +182,8 @@ class Guard(BaseHTTPMiddleware):
                 return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
             if principal is None:
                 return JSONResponse({"error": "authentication required"}, status_code=401)
-            if principal.scope == "metrics":  # a scrape-only token never reads the knowledge base
-                return JSONResponse({"error": "metrics tokens cannot use MCP"}, status_code=403)
+            if principal.scope in {"metrics", "client"}:  # scrape-only and client-app tokens never read the knowledge base
+                return JSONResponse({"error": f"{principal.scope} tokens cannot use MCP"}, status_code=403)
         elif (path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}
               and _bearer(request) is None and not request.headers.get(CSRF_HEADER)):
             # Cookie-authenticated (browser) writes must carry a custom header, which cross-site pages can't set.
@@ -230,6 +229,9 @@ def idle() -> None:
         raise HTTPException(503, "re-embedding is in progress; search and uploads are paused until it finishes")
 
 
+app.include_router(api_v1.build_router(require, idle))
+
+
 @app.get("/metrics", dependencies=[Depends(require("metrics"))])
 def prometheus_metrics():
     body, ctype = metrics.render()
@@ -260,7 +262,7 @@ def search(q: str = Query(min_length=1, max_length=MAX_QUERY), limit: int = Quer
 
 
 @app.post("/api/documents", dependencies=[Depends(require("full")), Depends(idle)])
-async def upload_document(file: UploadFile = File(...), doc_type: str = Query("policy", max_length=50)):
+async def upload_document(file: UploadFile = File(...), doc_type: str = Query("policy", pattern="^[a-z][a-z0-9_-]{0,29}$")):
     data = await file.read(MAX_UPLOAD + 1)  # bounded read: never buffer more than the limit
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "file too large (10 MB limit)")
@@ -311,12 +313,8 @@ def delete_document(doc_id: int):
 @app.post("/api/seed", dependencies=[Depends(require("full")), Depends(idle)])
 def load_demo_pack():
     """Load the packaged fictional demo policies. Idempotent: unchanged files are skipped."""
-    results = []
     with _translate(), connect_vector() as conn:
-        for f in sorted(SEED_PACK.glob("*.md")):
-            r = ingest_file(f, conn=conn)
-            results.append({"source": f.name, "status": r["status"], "chunks": r["chunks"]})
-    return {"results": results}
+        return {"results": seedpack.load(conn)}
 
 
 @app.get("/api/stats", dependencies=[Depends(require("read"))])
@@ -354,7 +352,7 @@ class PasswordBody(BaseModel):
 
 class TokenBody(BaseModel):
     name: str = Field(min_length=1, max_length=60)
-    scope: str = Field(pattern="^(read|metrics|full)$")
+    scope: str = Field(pattern="^(read|metrics|client|full)$")
 
 
 def _start_session(conn, request: Request, response: Response) -> None:

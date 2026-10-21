@@ -4,7 +4,7 @@ import { $, copy, field, fill, fmtDate, h, toast } from "/static/ui.js";
 let poller = null;
 
 export async function initSettings() {
-  await Promise.all([renderAccounts(), renderEmbeddings(), renderSecurity()]);
+  await Promise.all([renderAccounts(), renderValidation(), renderEmbeddings(), renderSecurity()]);
 }
 
 // ---- provider accounts --------------------------------------------------------------------------
@@ -31,6 +31,31 @@ async function renderAccounts() {
 }
 
 function renderAll() { initSettings(); }
+
+// ---- request validation ---------------------------------------------------------------------------
+async function renderValidation() {
+  const box = $("settings-validation");
+  let s;
+  try { s = await api("/api/v1/validation/settings"); } catch (err) { box.replaceChildren(h("p", { class: "error" }, err.message)); return; }
+  const pick = h("select", { id: "val-account" }, h("option", { value: "" }, "Automatic (the only account with a chat model)"),
+    ...s.accounts.map((a) => h("option", { value: a.id }, `${a.name} · ${a.chat_model}`)));
+  pick.value = s.account || "";
+  const note = h("p", { class: "hint" }, s.effective
+    ? "Every new request is checked by this model against your policy documents before a person sees it."
+    : "No chat model is available, so requests arrive without AI advice. Add an account with a chat model above.");
+  fill(box,
+    h("h2", {}, "Request validation"),
+    h("p", { class: "muted" }, "Which account pre-validates employee requests. The request text and the retrieved policy passages are sent to that provider; employee names, e-mail addresses and numbers are not."),
+    field("Account", pick, undefined), note,
+    h("div", { class: "btns" }, h("button", { class: "primary", type: "button", onclick: async (e) => {
+      e.target.disabled = true;
+      try { await api("/api/v1/validation/settings", { method: "PUT", json: { account: pick.value || null } }); toast("Saved"); renderValidation(); } catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
+    } }, "Save"),
+    h("button", { class: "secondary", type: "button", onclick: async (e) => {
+      e.target.disabled = true;
+      try { const r = await api("/api/v1/requests/validate-pending", { method: "POST" }); toast(r.queued ? `Validating ${r.queued} waiting requests` : "No requests are waiting for validation"); } catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
+    } }, "Validate waiting requests")));
+}
 
 function accountCard(a, data, reload, edit) {
   const result = h("p", { class: "test-result", role: "status" });
@@ -179,7 +204,7 @@ async function renderSecurity() {
   try { [tokens, session] = await Promise.all([api("/api/tokens"), api("/api/session")]); } catch (err) { box.replaceChildren(h("p", { class: "error" }, err.message)); return; }
   const reveal = h("div", { hidden: true });
   const tName = h("input", { id: "tk-name", maxlength: "60", required: true, placeholder: "e.g. Claude Code on my laptop" });
-  const tScope = h("select", { id: "tk-scope" }, h("option", { value: "read" }, "Read-only (search and list; recommended for MCP)"), h("option", { value: "metrics" }, "Metrics only (scrape /metrics; reads nothing else)"), h("option", { value: "full" }, "Full access"));
+  const tScope = h("select", { id: "tk-scope" }, h("option", { value: "read" }, "Read-only (search and list; recommended for MCP)"), h("option", { value: "client" }, "Client application (employees and requests only)"), h("option", { value: "metrics" }, "Metrics only (scrape /metrics; reads nothing else)"), h("option", { value: "full" }, "Full access"));
   const tErr = h("p", { class: "error", role: "alert" });
   const tokenForm = h("form", { class: "grid-inline", onsubmit: async (e) => {
     e.preventDefault();

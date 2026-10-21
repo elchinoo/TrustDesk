@@ -30,6 +30,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd in ("seed", "ingest"):
         from .ingest import ingest_file
 
+        if args.cmd == "seed" and args.pack == "acme":
+            from .seedpack import load
+
+            for r in load():
+                print(f"{r['source']}: {r['status']} ({r['chunks']} chunks)")
+            return 0
         paths = [SEED_DIR / args.pack] if args.cmd == "seed" else [Path(x) for x in args.paths]
         files = [f for p_ in paths for f in ([p_] if p_.is_file() else sorted(p_.rglob("*"))) if f.is_file()
                  and f.suffix.lower() in {".md", ".txt", ".pdf"}]
@@ -81,7 +87,6 @@ def _start() -> int:
     import os
 
     from .db import connect
-    from .ingest import ingest_file
     from .migrate import run
 
     try:
@@ -110,8 +115,10 @@ def _start() -> int:
         with connect() as conn:
             empty = conn.execute("SELECT NOT EXISTS (SELECT 1 FROM kb_document) AS e").fetchone()["e"]
         if empty:
-            for f in sorted((SEED_DIR / "acme").glob("*.md")):
-                print(f"seed {f.name}: {ingest_file(f)['status']}")
+            from .seedpack import load
+
+            for r in load():
+                print(f"seed {r['source']}: {r['status']}")
     _serve()
     return 0
 

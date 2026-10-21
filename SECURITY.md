@@ -15,8 +15,11 @@ affected version or commit.
 - Browser sessions use a random cookie (`HttpOnly`, `SameSite=Strict`, `Secure` over HTTPS). Only its SHA-256
   is stored server-side. Sessions last 12 hours and all end when the password changes or you sign out. Browser
   writes also require a custom header, and no credential is kept in page storage.
-- API tokens are random, shown once, stored as SHA-256 hashes, revocable, and have a `read`, `metrics` or `full` scope.
+- API tokens are random, shown once, stored as SHA-256 hashes, revocable, and have a `read`, `metrics`, `client` or `full` scope.
   `read` tokens can search and list but cannot change data, manage accounts or spend provider credit.
+  `client` tokens (for applications that send employee requests) can only use the employee and request endpoints of
+  `/api/v1`: they cannot read documents, see the AI advice, decide, open reports or use `/mcp`. Scopes are matched
+  strictly: a `read` or `metrics` token is refused on the request API.
 - `/mcp` accepts bearer tokens only, never browser cookies.
 - An optional static `TRUSTDESK_API_KEY` remains for automation. It is a full-access credential held in the
   environment or a file: treat it like a password, or leave it unset and use tokens.
@@ -47,6 +50,23 @@ affected version or commit.
 - Limitation: the host name is resolved once for the check and again by the HTTP client, so a hostile DNS
   server could answer differently the second time. Redirects are refused, which closes the usual route; run the
   server with network egress rules if that matters to you.
+
+**Compliance data and AI validation**
+- Requests can hold sensitive facts (sick leave, medical expenses). Only the approver session, `full` tokens and
+  `client` tokens can read them; `read` and `metrics` tokens and `/mcp` cannot. A client token is a service
+  credential: anything holding it can read every request, so keep it server-side.
+- Employees are identified by the client application; TrustDesk does not authenticate individual employees.
+- The AI model sees the request text and details, system-computed facts and retrieved policy passages. It never
+  receives names, e-mail addresses or employee numbers. Free text from employees can still contain personal data.
+- Request text is untrusted: it is delimited in the prompt, the model is told to ignore instructions inside it and
+  has no tools. The model's verdict is parsed strictly and re-checked (citations must be real passages, quotes are
+  matched against the passage text, uncited decisions are downgraded, a failed automatic check blocks an
+  approval). The AI never decides: only an approver can, and every decision is written to an audit trail. A
+  decision against the AI advice requires a written justification and is flagged.
+- Every validation attempt stores a snapshot of the passages it saw, so the evidence survives later edits or
+  deletion of a policy document.
+- Report CSV files neutralise cells beginning with `=`, `+`, `-` (non-numeric) or `@`. Request bodies over 64 KB are
+  refused.
 
 **Content**
 - Retrieved document text is untrusted data. The Ask prompt delimits passages, tells the model not to follow

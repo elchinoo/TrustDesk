@@ -25,8 +25,14 @@ export function toast(msg, bad = false) {
   t.textContent = msg;
   t.className = "toast" + (bad ? " bad" : "");
   t.hidden = false;
+  // A modal <dialog> sits in the browser's top layer, above everything else. A manual popover joins that layer,
+  // so messages stay visible while a review window is open.
+  try { if (!t.matches(":popover-open")) t.showPopover(); } catch { /* popover API unavailable: plain fixed element */ }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, bad ? 8000 : 3500);
+  toastTimer = setTimeout(() => {
+    try { t.hidePopover(); } catch { /* not shown as a popover */ }
+    t.hidden = true;
+  }, bad ? 8000 : 3500);
 }
 
 export async function copy(text, okMsg = "Copied") {
@@ -50,4 +56,34 @@ export function field(label, input, hint) {
 // Element.replaceChildren renders null/undefined/false as the text "null"; this drops them instead.
 export function fill(el, ...kids) {
   el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
+}
+
+export const fmtDateTime = (s) => (s ? new Date(s).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+
+// Plain dates (YYYY-MM-DD) have no time zone: never run them through Date(), which would shift them by a day.
+export function fmtDay(s) {
+  if (!s) return "";
+  const [y, m, d] = String(s).slice(0, 10).split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+export const money = (amount, currency) => (amount == null ? "" : `${Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency || ""}`.trim());
+
+export const STATUS = {
+  submitted: ["Validating", "plain"], pending_review: ["Needs decision", "warn"], needs_info: ["Waiting for employee", "alt"],
+  approved: ["Approved", "ok"], rejected: ["Rejected", "bad"], withdrawn: ["Withdrawn", "plain"],
+};
+export const ADVICE = {
+  approve: ["Suggests approval", "ok"], reject: ["Suggests rejection", "bad"],
+  needs_info: ["Needs more information", "warn"], manual: ["No AI advice", "plain"],
+};
+export const COMPLIANCE = { compliant: ["Compliant", "ok"], non_compliant: ["Non-compliant", "bad"], unclear: ["Unclear", "warn"] };
+
+export function badge(map, key, fallback = "") {
+  const [label, tone] = map[key] || [fallback || key || "", "plain"];
+  return h("span", { class: `badge ${tone}` }, label);
+}
+
+export function dialogClose(dlg) {
+  if (dlg.open) dlg.close();
 }

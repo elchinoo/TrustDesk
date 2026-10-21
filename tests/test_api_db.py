@@ -26,12 +26,12 @@ def test_seed_stats_list_view_delete_roundtrip(client):
     assert client.get("/api/stats", headers=AUTH).json()["documents"] == 0
 
     r = client.post("/api/seed", headers=AUTH).json()["results"]
-    assert len(r) == 6 and all(x["status"] == "ingested" for x in r)
+    assert len(r) == 16 and all(x["status"] == "ingested" for x in r)
     again = client.post("/api/seed", headers=AUTH).json()["results"]
     assert all(x["status"] == "unchanged" for x in again)  # idempotent
 
     stats = client.get("/api/stats", headers=AUTH).json()
-    assert stats["documents"] == 6 and stats["chunks"] > 6 and stats["semantic"] is False
+    assert stats["documents"] == 16 and stats["chunks"] > 16 and stats["semantic"] is False
 
     docs = client.get("/api/documents", headers=AUTH).json()
     doc = docs[0]
@@ -41,7 +41,7 @@ def test_seed_stats_list_view_delete_roundtrip(client):
     assert client.delete(f"/api/documents/{doc['id']}", headers=AUTH).json() == {"deleted": doc["id"]}
     assert client.get(f"/api/documents/{doc['id']}", headers=AUTH).status_code == 404
     assert client.delete(f"/api/documents/{doc['id']}", headers=AUTH).status_code == 404
-    assert client.get("/api/stats", headers=AUTH).json()["documents"] == 5
+    assert client.get("/api/stats", headers=AUTH).json()["documents"] == 15
 
 
 def test_upload_search_and_validation(client):
