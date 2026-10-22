@@ -558,7 +558,7 @@ def test_account(account: str, body: TestBody):
     with _translate(), connect() as conn:
         if body.target == "chat":
             reply = asker.chat(accounts.chat_config_for(conn, _ref(account)),
-                               [{"role": "user", "content": "Reply with the single word OK."}], max_tokens=8)
+                               [{"role": "user", "content": "Reply with the single word OK. Keep any reasoning very short."}], max_tokens=64)
             detail = {"reply": reply["text"][:60]}
         else:
             cfg = (embedcfg.from_env() if account == "env" else accounts.embedding_config_for(conn, int(account)))

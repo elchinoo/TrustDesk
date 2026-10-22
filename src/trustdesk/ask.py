@@ -7,7 +7,7 @@ import re
 
 from . import vault
 from .accounts import ChatConfig
-from .llm_http import LLMError, error_detail, post_json
+from .llm_http import LLMError, answer_text, error_detail, post_json
 from .search import hybrid_search
 
 MAX_PASSAGE_CHARS = 1500
@@ -43,12 +43,9 @@ def chat(cfg: ChatConfig, messages: list[dict], max_tokens: int = 700) -> dict:
         raise LLMError(f"chat endpoint returned HTTP {resp.status_code}: {error_detail(resp, key)}")
     try:
         data = resp.json()
-        text = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
+    except ValueError as exc:
         raise LLMError("unexpected response from the chat endpoint (no choices[0].message.content)") from exc
-    if not isinstance(text, str) or not text.strip():
-        raise LLMError("the chat endpoint returned an empty answer")
-    return {"text": text.strip(), "usage": data.get("usage")}
+    return {"text": answer_text(data, max_tokens), "usage": data.get("usage") if isinstance(data, dict) else None}
 
 
 def answer(conn, question: str, cfg: ChatConfig, limit: int = 6) -> dict:
