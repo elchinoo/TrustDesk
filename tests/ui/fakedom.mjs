@@ -45,7 +45,7 @@ export const findAll = (el, pred) => [...(pred(el) ? [el] : []), ...(el.children
 // Installs the globals and returns helpers. `routes(path, init)` answers every fetch with a JSON body.
 export async function installDom({ hash, routes, perms = ["*"] }) {
   const els = {};
-  globalThis.document = { activeElement: null, hidden: false, documentElement: { dataset: { csrf: "X-TrustDesk-CSRF" } }, getElementById: (id) => (els[id] ||= new El("#" + id)),
+  globalThis.document = { activeElement: null, hidden: false, documentElement: { dataset: { csrf: "X-TrustDesk-CSRF" } }, getElementById: (id) => Object.values(els).map((r) => find(r, (e) => e.attrs?.id === id)).find(Boolean) || (els[id] ||= new El("#" + id)),   // like a page: a created element is found once it is attached
     createElement: (t) => new El(t), createElementNS: (_, t) => new El(t), createTextNode: (d) => ({ nodeType: 3, data: d }), querySelectorAll: () => [] };
   globalThis.window = { dispatchEvent() {}, addEventListener() {} };
   globalThis.CustomEvent = class {};
