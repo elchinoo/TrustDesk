@@ -143,26 +143,49 @@ function renderOnboarding() {
 // ---- review window -------------------------------------------------------------------------------
 async function openReview(ref) {
   const dlg = $("review");
+  review = null;
   fill($("review-body"), h("p", { class: "loading" }, "Loading…"));
   if (!dlg.open) dlg.showModal();
   await renderReview(ref);
 }
 
 let reviewPoll = null;
+// The review window is built once per request: header, request details and AI card are data regions that the poll
+// may redraw; the decision card holds the reviewer's note, so it is rebuilt only when what it shows really changes,
+// and then the note, the focus and the caret move to the new textarea.
+let review = null;
+
+function reviewShell(ref) {
+  const s = { ref, head: h("div", { class: "row" }), left: h("div", {}), ai: h("div", {}), decision: h("div", {}), sig: null, note: null };
+  fill($("review-body"), s.head, h("div", { class: "review-cols" }, s.left, h("div", {}, s.ai, s.decision)));
+  return s;
+}
 
 async function renderReview(ref) {
   clearTimeout(reviewPoll);
   let d;
-  try { d = await api("/api/v1/requests/" + encodeURIComponent(ref)); } catch (err) { fill($("review-body"), h("p", { class: "error" }, err.message)); return; }
+  try { d = await api("/api/v1/requests/" + encodeURIComponent(ref)); } catch (err) { review = null; fill($("review-body"), h("p", { class: "error" }, err.message)); return; }
   const v = d.validation;
   const working = d.status === "submitted" || d.validation_state === "running" || d.validation_state === "pending";
-  fill($("review-body"),
-    h("div", { class: "row" },
-      h("div", {}, h("h2", { id: "review-title" }, `${d.ref} · ${d.type_label}`), h("p", { class: "muted small-text" }, `Submitted ${fmtDateTime(d.submitted_at)} · ${d.source || ""}`)),
-      badge(STATUS, d.status)),
-    h("div", { class: "review-cols" },
-      h("div", {}, requestCard(d), employeeCard(d.employee), timeline(d.events)),
-      h("div", {}, working ? h("section", { class: "card ai" }, h("h3", {}, "AI pre-validation"), h("p", { class: "loading" }, "Checking the request against the policies…")) : aiCard(d, v), decisionCard(d, v))));
+  if (!review || review.ref !== ref) review = reviewShell(ref);
+  fill(review.head, h("div", {}, h("h2", { id: "review-title" }, `${d.ref} · ${d.type_label}`), h("p", { class: "muted small-text" }, `Submitted ${fmtDateTime(d.submitted_at)} · ${d.source || ""}`)),
+    badge(STATUS, d.status));
+  fill(review.left, requestCard(d), employeeCard(d.employee), timeline(d.events));
+  fill(review.ai, working ? h("section", { class: "card ai" }, h("h3", {}, "AI pre-validation"), h("p", { class: "loading" }, "Checking the request against the policies…")) : aiCard(d, v));
+  const rec = v && v.state === "ok" ? v.recommendation : null;
+  const sig = JSON.stringify([d.status, can("requests:decide"), rec, d.decided_by, d.decided_at, d.decision_note, d.override]);
+  if (sig !== review.sig) {
+    const old = review.note;
+    const kept = old ? { value: old.value, focused: document.activeElement === old, from: old.selectionStart, to: old.selectionEnd } : null;
+    const { card, note } = decisionCard(d, v);
+    fill(review.decision, card);
+    if (note && kept) {
+      note.value = kept.value;
+      if (kept.focused) { note.focus(); if (kept.from != null) note.setSelectionRange(kept.from, kept.to); }
+    }
+    review.note = note;
+    review.sig = sig;
+  }
   if (working) reviewPoll = setTimeout(() => { if ($("review").open) renderReview(ref); }, 2500);
 }
 
@@ -227,13 +250,13 @@ async function rerun(d) {
 
 function decisionCard(d, v) {
   if (!can("requests:decide") && ["pending_review", "needs_info"].includes(d.status)) {
-    return h("section", { class: "card" }, h("h3", {}, "Decision"), h("p", { class: "muted" }, "Your role can read requests but not decide them."));
+    return { card: h("section", { class: "card" }, h("h3", {}, "Decision"), h("p", { class: "muted" }, "Your role can read requests but not decide them.")), note: null };
   }
   if (!["pending_review", "needs_info"].includes(d.status)) {
-    return h("section", { class: "card" }, h("h3", {}, "Decision"),
+    return { note: null, card: h("section", { class: "card" }, h("h3", {}, "Decision"),
       h("p", {}, badge(STATUS, d.status), ` by ${d.decided_by || "n/a"} ${d.decided_at ? "on " + fmtDateTime(d.decided_at) : ""}`),
       d.decision_note ? h("p", { class: "body" }, d.decision_note) : null,
-      d.override ? h("div", { class: "banner" }, "This decision went against the AI advice. It is listed in the overrides report.") : null);
+      d.override ? h("div", { class: "banner" }, "This decision went against the AI advice. It is listed in the overrides report.") : null) };
   }
   const note = h("textarea", { id: "decision-note", rows: "3", maxlength: "2000", placeholder: "Reason shown to the employee (required to reject or ask for information)" });
   const rec = v && v.state === "ok" ? v.recommendation : null;
@@ -248,7 +271,7 @@ function decisionCard(d, v) {
       initRequests();
     } catch (err) { problem.textContent = err.message; toast(err.message, true); e.target.disabled = false; }
   };
-  return h("section", { class: "card" }, h("h3", {}, "Your decision"),
+  const card = h("section", { class: "card" }, h("h3", {}, "Your decision"),
     rec === "reject" ? h("p", { class: "warn-text" }, "The AI suggests rejecting. Approving needs a written justification.") : null,
     rec === "approve" ? h("p", { class: "muted small-text" }, "The AI suggests approving. Rejecting needs a written justification.") : null,
     field("Note", note), problem,
@@ -256,6 +279,7 @@ function decisionCard(d, v) {
       h("button", { class: "primary", type: "button", onclick: act("approve") }, "Approve"),
       h("button", { class: "danger", type: "button", onclick: act("reject") }, "Reject"),
       d.status === "pending_review" ? h("button", { class: "secondary", type: "button", onclick: act("request_info") }, "Review: ask for information") : null));
+  return { card, note };
 }
 
 // ---- new request -----------------------------------------------------------------------------------

@@ -154,6 +154,18 @@ async function renderEmbeddings() {
   select.value = String(act.account);
   const progress = h("progress", { max: "1", value: "0", hidden: true });
   const msg = h("p", { class: "muted", role: "status" });
+  // The facts are the only part that a finished re-embedding changes. They live in their own region so that the
+  // poll never has to rebuild the select above them (a choice the person is making would be lost).
+  const facts = h("dl", { class: "facts" });
+  const showFacts = (a, st) => fill(facts, h("dt", {}, "Active"), h("dd", {}, `${a.model} · ${a.dimension} dimensions · ${a.semantic ? "semantic" : "word matching only"}`),
+    h("dt", {}, "Passages"), h("dd", {}, String(st.chunks)));
+  showFacts(act, stats);
+  const refresh = async () => {
+    try { const [st, sx] = await Promise.all([api("/api/embeddings/status"), api("/api/stats")]); showFacts(st.active, sx); } catch { /* keep the old facts */ }
+    progress.hidden = true;
+    msg.textContent = "";
+    go.disabled = options.length === 0;
+  };
   const go = h("button", { class: "primary", type: "button", disabled: options.length === 0, onclick: async () => {
     const chosen = options.find((a) => String(a.id) === select.value);
     if (!confirm(`Use "${chosen.name}" (${chosen.embedding_model}) for embeddings?\n\nIf the model or vector size differs, all ${stats.chunks} passages are re-embedded. Search and uploads are paused while that runs, and nothing changes if the provider call fails.`)) return;
@@ -161,21 +173,19 @@ async function renderEmbeddings() {
     try {
       const r = await api("/api/embeddings/activate", { method: "POST", json: { account: select.value } });
       toast(r.message);
-      if (r.started) poll(progress, msg, go); else { go.disabled = false; renderEmbeddings(); }
+      if (r.started) poll(progress, msg, go, refresh); else await refresh();
     } catch (err) { go.disabled = false; msg.className = "error"; msg.textContent = err.message; }
   } }, "Use for embeddings");
   box.replaceChildren(
     h("h2", {}, "Search embeddings"),
     h("p", { class: "muted" }, "Embeddings turn passages and questions into vectors for semantic search. The built-in demo embedder only matches words; a provider model understands meaning."),
-    h("dl", { class: "facts" },
-      h("dt", {}, "Active"), h("dd", {}, `${act.model} · ${act.dimension} dimensions · ${act.semantic ? "semantic" : "word matching only"}`),
-      h("dt", {}, "Passages"), h("dd", {}, String(stats.chunks))),
+    facts,
     options.length ? h("div", { class: "field" }, h("label", { for: "emb-select" }, "Account to use"), select) : h("p", { class: "hint" }, "Add an account with an embedding model to switch."),
     h("div", { class: "btns" }, go), progress, msg);
-  if (status.job.state === "running") poll(progress, msg, go);
+  if (status.job.state === "running") poll(progress, msg, go, refresh);
 }
 
-function poll(progress, msg, go) {
+function poll(progress, msg, go, refresh) {
   clearInterval(poller);
   progress.hidden = false;
   go.disabled = true;
@@ -189,7 +199,7 @@ function poll(progress, msg, go) {
       if (job.state !== "running") {
         clearInterval(poller);
         if (job.state === "done") toast("Embeddings switched"); else toast(job.message, true);
-        renderEmbeddings();
+        refresh();
       }
     } catch { /* transient: keep polling */ }
   };
