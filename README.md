@@ -123,7 +123,7 @@ From a terminal, `trustdesk reembed` re-embeds everything after you change these
 ## Single sign-on and roles (the ecosystem identity provider)
 
 TrustDesk can run **standalone** (the first-run setup code and an admin password, as above) or **federated** with the ecosystem's
-[identity provider](https://github.com/elchinoo/agentpg-identity). Register TrustDesk there as a `web` app with client id
+[identity provider](https://github.com/elchinoo/identity). Register TrustDesk there as a `web` app with client id
 `trustdesk`, redirect URI `https://<trustdesk>/auth/callback`, and these roles, then set:
 
 | Variable | Meaning |
