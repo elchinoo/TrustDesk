@@ -7,6 +7,14 @@ affected version or commit.
 
 ## Security model
 
+**Federated sign-in** (optional, `TRUSTDESK_OIDC_ISSUER`)
+- Access tokens are verified locally against the identity provider's JWKS (algorithm allow-list, issuer, audience, expiry), so
+  a token minted for another app or signed by another key is refused. Only the roles of THIS app are honoured, and they are
+  mapped to permissions in `core.py`; an authenticated person with no role here can do nothing.
+- Browser sign-in is authorization code + PKCE with state and nonce; the session is server-side and carries the person's roles
+  from the verified ID token. Sign-out also ends the single sign-on session. Role changes reach an existing session at its next sign-in.
+- `/mcp` needs the `mcp:use` permission; scrape-only and client-application credentials are refused.
+
 **Credentials**
 - First run: no credentials exist and every protected route is denied. The server prints a one-time setup code
   to its log; whoever presents it in the browser sets the admin password. The code is held in memory only and

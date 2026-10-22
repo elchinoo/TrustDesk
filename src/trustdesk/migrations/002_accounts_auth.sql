@@ -1,5 +1,5 @@
 -- Provider accounts, instance settings, API tokens and web sessions.
-CREATE TABLE app_setting (
+CREATE TABLE IF NOT EXISTS app_setting (
     key   text PRIMARY KEY,
     value text NOT NULL
 );

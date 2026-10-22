@@ -1,5 +1,5 @@
-import { api } from "/static/api.js";
-import { $, copy, h, toast } from "/static/ui.js";
+import { api } from "/kit/api.js";
+import { $, copy, h, toast } from "/kit/ui.js";
 
 const EXAMPLES = [
   "How do we encrypt data at rest?",

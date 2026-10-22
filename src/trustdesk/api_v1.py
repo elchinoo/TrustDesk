@@ -8,6 +8,7 @@ import contextlib
 from datetime import date
 from typing import Any
 
+from apgkit.auth import Principal
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -21,7 +22,6 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import accounts, demo, people, reports, request_types, seedpack, validator, workflow
-from .auth import Principal
 from .db import connect, connect_vector
 
 PUBLIC_EVENTS = {"submitted", "resubmitted", "withdrawn", "approved", "rejected", "info_requested"}
@@ -94,7 +94,7 @@ class ValidationSettingBody(_Body):
 
 
 def _actor(p: Principal) -> str:
-    return {"session": "admin", "static": "api-key"}.get(p.kind, f"{p.kind}-{p.ident}" if p.ident else p.kind)
+    return p.actor
 
 
 @contextlib.contextmanager
@@ -130,8 +130,12 @@ def _validate_many(ids: list[int]) -> None:
 
 def build_router(require, idle) -> APIRouter:
     r = APIRouter(prefix="/api/v1")
-    client_ok = Depends(require("client"))
-    admin = Depends(require("full"))
+    read_ok = Depends(require("requests:client", "requests:read"))      # a client application, or someone who may see requests
+    write_ok = Depends(require("requests:client"))
+    count_ok = Depends(require("requests:read"))
+    decide_ok = Depends(require("requests:decide"))
+    reports_ok = Depends(require("reports:read"))
+    admin = Depends(require("settings:manage"))
 
     def small_body(request: Request) -> None:
         length = request.headers.get("content-length")
@@ -139,28 +143,28 @@ def build_router(require, idle) -> APIRouter:
             raise HTTPException(413, f"request body is larger than {MAX_BODY // 1024} KB")
 
     # ---- catalogue ------------------------------------------------------------------------------
-    @r.get("/request-types", dependencies=[client_ok])
+    @r.get("/request-types", dependencies=[read_ok])
     def request_types_list():
         return {"types": request_types.catalogue()}
 
     # ---- employees ------------------------------------------------------------------------------
-    @r.post("/employees", status_code=201, dependencies=[client_ok, Depends(small_body)])
+    @r.post("/employees", status_code=201, dependencies=[write_ok, Depends(small_body)])
     def create_employee(body: EmployeeBody):
         with _errors(), connect() as conn:
             return people.create(conn, body.model_dump())
 
-    @r.get("/employees", dependencies=[client_ok])
+    @r.get("/employees", dependencies=[read_ok])
     def list_employees(q: str | None = Query(None, max_length=100), status: str | None = Query(None, max_length=10),
                        limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0, le=100000)):
         with connect() as conn:
             return people.listing(conn, query=q, status=status, limit=limit, offset=offset)
 
-    @r.get("/employees/{employee_no}", dependencies=[client_ok])
+    @r.get("/employees/{employee_no}", dependencies=[read_ok])
     def get_employee(employee_no: str):
         with _errors(), connect() as conn:
             return people.get(conn, employee_no)
 
-    @r.patch("/employees/{employee_no}", dependencies=[client_ok, Depends(small_body)])
+    @r.patch("/employees/{employee_no}", dependencies=[write_ok, Depends(small_body)])
     def patch_employee(employee_no: str, body: EmployeePatch):
         with _errors(), connect() as conn:
             return people.update(conn, employee_no, body.model_dump(exclude_unset=True))
@@ -168,7 +172,7 @@ def build_router(require, idle) -> APIRouter:
     # ---- requests: client side --------------------------------------------------------------------
     @r.post("/requests", status_code=201, dependencies=[Depends(small_body)])
     def submit_request(body: RequestBody, background: BackgroundTasks, response: Response,
-                       principal: Principal = client_ok, idempotency_key: str | None = Header(None, max_length=80)):
+                       principal: Principal = write_ok, idempotency_key: str | None = Header(None, max_length=80)):
         with _errors(), connect() as conn:
             req, created = workflow.create(conn, body.model_dump(), actor=_actor(principal), source="api",
                                            idempotency_key=idempotency_key)
@@ -176,10 +180,10 @@ def build_router(require, idle) -> APIRouter:
             background.add_task(validator.validate, req["id"])
         else:
             response.status_code = 200  # the same Idempotency-Key was seen before: nothing new was created
-        return req if principal.scope == "full" else _public(req)
+        return req if principal.can("requests:read") else _public(req)
 
     @r.get("/requests")
-    def list_requests(principal: Principal = client_ok, employee_no: str | None = Query(None, max_length=40),
+    def list_requests(principal: Principal = read_ok, employee_no: str | None = Query(None, max_length=40),
                       status: str | None = Query(None, max_length=20), type: str | None = Query(None, max_length=40),
                       kind: str | None = Query(None, max_length=10), date_from: date | None = Query(None, alias="from"),
                       date_to: date | None = Query(None, alias="to"), ai: str | None = Query(None, max_length=12),
@@ -187,18 +191,18 @@ def build_router(require, idle) -> APIRouter:
                       offset: int = Query(0, ge=0, le=100000)):
         with connect() as conn:
             out = workflow.listing(conn, employee_no=employee_no, status=status, type_=type, kind=kind,
-                                   date_from=date_from, date_to=date_to, ai=ai if principal.scope == "full" else None,
+                                   date_from=date_from, date_to=date_to, ai=ai if principal.can("requests:read") else None,
                                    search=q, limit=limit, offset=offset)
-        if principal.scope != "full":
+        if not principal.can("requests:read"):
             out["items"] = [_public(i) for i in out["items"]]
         return out
 
-    @r.get("/requests/counts", dependencies=[admin])
+    @r.get("/requests/counts", dependencies=[count_ok])
     def request_counts():
         with connect() as conn:
             return workflow.counts(conn)
 
-    @r.post("/requests/validate-pending", status_code=202, dependencies=[admin, Depends(idle)])
+    @r.post("/requests/validate-pending", status_code=202, dependencies=[decide_ok, Depends(idle)])
     def validate_pending(background: BackgroundTasks):
         with connect() as conn:
             ids = workflow.pending_validation_ids(conn)
@@ -206,12 +210,12 @@ def build_router(require, idle) -> APIRouter:
         return {"queued": len(ids)}
 
     @r.get("/requests/{ref}")
-    def get_request(ref: str, principal: Principal = client_ok):
+    def get_request(ref: str, principal: Principal = read_ok):
         rid = _request_id(ref)
         with _errors(), connect() as conn:
             req = workflow.get(conn, rid)
             events = workflow.events(conn, rid)
-            if principal.scope != "full":
+            if not principal.can("requests:read"):
                 events = [{"at": e["at"], "action": e["action"], "note": e["note"]} for e in events
                           if e["action"] in PUBLIC_EVENTS]
                 return {**_public(req), "events": events}
@@ -219,22 +223,22 @@ def build_router(require, idle) -> APIRouter:
         return {**req, "events": events, "validation": v}
 
     @r.put("/requests/{ref}", dependencies=[Depends(small_body)])
-    def edit_request(ref: str, body: RequestUpdate, background: BackgroundTasks, principal: Principal = client_ok):
+    def edit_request(ref: str, body: RequestUpdate, background: BackgroundTasks, principal: Principal = write_ok):
         rid = _request_id(ref)
         with _errors(), connect() as conn:
             req = workflow.update(conn, rid, body.model_dump(exclude_unset=True), actor=_actor(principal))
         background.add_task(validator.validate, rid)
-        return req if principal.scope == "full" else _public(req)
+        return req if principal.can("requests:read") else _public(req)
 
     @r.post("/requests/{ref}/withdraw")
-    def withdraw_request(ref: str, body: NoteBody | None = None, principal: Principal = client_ok):
+    def withdraw_request(ref: str, body: NoteBody | None = None, principal: Principal = write_ok):
         rid = _request_id(ref)
         with _errors(), connect() as conn:
             req = workflow.withdraw(conn, rid, actor=_actor(principal), note=body.note if body else None)
-        return req if principal.scope == "full" else _public(req)
+        return req if principal.can("requests:read") else _public(req)
 
     # ---- requests: approver side ------------------------------------------------------------------
-    @r.post("/requests/{ref}/validate", status_code=202, dependencies=[admin, Depends(idle)])
+    @r.post("/requests/{ref}/validate", status_code=202, dependencies=[decide_ok, Depends(idle)])
     def revalidate(ref: str, background: BackgroundTasks):
         rid = _request_id(ref)
         with _errors(), connect() as conn:
@@ -245,17 +249,17 @@ def build_router(require, idle) -> APIRouter:
         return {"queued": True}
 
     @r.post("/requests/{ref}/decision", dependencies=[Depends(small_body)])
-    def decide(ref: str, body: DecisionBody, principal: Principal = admin):
+    def decide(ref: str, body: DecisionBody, principal: Principal = decide_ok):
         rid = _request_id(ref)
         with _errors(), connect() as conn:
             return workflow.decide(conn, rid, body.action, body.note, actor=_actor(principal))
 
     # ---- reports ------------------------------------------------------------------------------------
-    @r.get("/reports", dependencies=[admin])
+    @r.get("/reports", dependencies=[reports_ok])
     def report_list():
         return {"reports": reports.CATALOGUE}
 
-    @r.get("/reports/{name}", dependencies=[admin])
+    @r.get("/reports/{name}", dependencies=[reports_ok])
     def report(name: str, date_from: date | None = Query(None, alias="from"), date_to: date | None = Query(None, alias="to"),
                format: str = Query("json", pattern="^(json|csv)$")):
         if name not in reports.REPORTS:
@@ -269,7 +273,7 @@ def build_router(require, idle) -> APIRouter:
         return data
 
     # ---- validation settings and demo data ------------------------------------------------------------
-    @r.get("/validation/settings", dependencies=[admin])
+    @r.get("/validation/settings", dependencies=[count_ok])
     def validation_settings():
         with connect() as conn:
             chosen = validator.store.get(conn, validator.SETTING)

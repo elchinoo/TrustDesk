@@ -1,5 +1,5 @@
-import { api } from "/static/api.js";
-import { $, h, toast } from "/static/ui.js";
+import { api } from "/kit/api.js";
+import { $, h, toast } from "/kit/ui.js";
 
 const STORE = "trustdesk.ask.account";
 let ready = false;

@@ -1,13 +1,13 @@
 import pytest
 from starlette.requests import Request
 
-from trustdesk import api
+from trustdesk import api, core
 from trustdesk.ingest import safe_source_name
 
 
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
-    api._failures.clear()
+    core.auth.limiter.clear()
     for v in ("TRUSTDESK_ALLOW_ANONYMOUS", "TRUSTDESK_API_KEY", "TRUSTDESK_API_KEY_FILE"):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("TRUSTDESK_API_KEY_FILE", "/nonexistent/key")
@@ -47,7 +47,7 @@ def test_missing_credentials_do_not_count_towards_lockout(client):
 def test_static_key_works_and_is_full_scope(monkeypatch):
     monkeypatch.setenv("TRUSTDESK_API_KEY", "k")
     p = api.authenticate(_request({"Authorization": "Bearer k"}))
-    assert p is not None and p.kind == "static" and p.scope == "full"
+    assert p is not None and p.kind == "static" and p.can("anything:at-all")
 
 
 def test_anonymous_mode_is_explicit_opt_in(monkeypatch):

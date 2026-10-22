@@ -4,13 +4,14 @@ import os
 import socket
 import time
 
+import apgkit.llm as apgkit_llm
 import httpx
 import pytest
 
 if not os.environ.get("TEST_DATABASE_URL"):
     pytest.skip("set TEST_DATABASE_URL to run DB tests", allow_module_level=True)
 
-from trustdesk import api, auth, embedcfg, llm_http, migrate, netguard, reembed_job, vault  # noqa: E402
+from trustdesk import auth, core, embedcfg, migrate, netguard, reembed_job, vault  # noqa: E402
 from trustdesk.db import connect  # noqa: E402
 from trustdesk.embeddings import hash_embed  # noqa: E402
 
@@ -45,15 +46,15 @@ def _env(monkeypatch, client):
     monkeypatch.setenv("TRUSTDESK_ENCRYPTION_KEY_FILE", "/nonexistent/key")
     monkeypatch.setenv("LLM_API_KEY_FILE", "/nonexistent/key")
     monkeypatch.setenv("EMBEDDING_DIM", "768")
-    monkeypatch.setattr(llm_http, "_client", lambda: httpx.Client(transport=httpx.MockTransport(provider)))
-    monkeypatch.setattr(llm_http.time, "sleep", lambda _: None)
+    monkeypatch.setattr(core.llm, "_http", lambda: httpx.Client(transport=httpx.MockTransport(provider)))
+    monkeypatch.setattr(apgkit_llm.time, "sleep", lambda _: None)
 
     def fake_dns(host, port, **kw):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
 
     monkeypatch.setattr(netguard.socket, "getaddrinfo", fake_dns)
-    api._failures.clear()
-    auth._setup_code = None
+    core.auth.limiter.clear()
+    core.local._setup_code = None
     reembed_job._state.update(state="idle", done=0, total=0, message="")
     CALLS.clear()
     client.cookies.clear()
@@ -156,7 +157,7 @@ def test_connection_test_reports_success_and_safe_errors(admin):
 
 
 def test_redirects_are_refused(admin, monkeypatch):
-    monkeypatch.setattr(llm_http, "_client", lambda: httpx.Client(
+    monkeypatch.setattr(core.llm, "_http", lambda: httpx.Client(
         transport=httpx.MockTransport(lambda r: httpx.Response(302, headers={"location": "http://169.254.169.254/"}))))
     acct = new_account(admin).json()["id"]
     r = admin.post(f"/api/accounts/{acct}/test", json={"target": "chat"}, headers=H)

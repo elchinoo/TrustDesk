@@ -6,7 +6,7 @@ import pytest
 if not os.environ.get("TEST_DATABASE_URL"):
     pytest.skip("set TEST_DATABASE_URL to run DB tests", allow_module_level=True)
 
-from trustdesk import api, auth, migrate, vault  # noqa: E402
+from trustdesk import auth, core, migrate, vault  # noqa: E402
 from trustdesk.db import connect  # noqa: E402
 
 H = {"X-TrustDesk-CSRF": "1"}
@@ -20,8 +20,8 @@ def _db(monkeypatch, client):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("TRUSTDESK_API_KEY_FILE", "/nonexistent/key")
     monkeypatch.setenv("TRUSTDESK_ENCRYPTION_KEY_FILE", "/nonexistent/key")
-    api._failures.clear()
-    auth._setup_code = None
+    core.auth.limiter.clear()
+    core.local._setup_code = None
     vault.lock()
     client.cookies.clear()
     with connect() as c:

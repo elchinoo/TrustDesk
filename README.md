@@ -120,6 +120,31 @@ You can also configure a single provider from the environment instead of the bro
 
 From a terminal, `trustdesk reembed` re-embeds everything after you change these.
 
+## Single sign-on and roles (the ecosystem identity provider)
+
+TrustDesk can run **standalone** (the first-run setup code and an admin password, as above) or **federated** with the ecosystem's
+[identity provider](https://github.com/elchinoo/agentpg-identity). Register TrustDesk there as a `web` app with client id
+`trustdesk`, redirect URI `https://<trustdesk>/auth/callback`, and these roles, then set:
+
+| Variable | Meaning |
+|---|---|
+| `TRUSTDESK_OIDC_ISSUER` | The identity provider's URL. Federation is off when unset. |
+| `TRUSTDESK_OIDC_CLIENT_ID` | Default `trustdesk`. |
+| `TRUSTDESK_OIDC_CLIENT_SECRET[_FILE]` | The app's secret from the provider. |
+| `TRUSTDESK_PUBLIC_URL` | The URL TrustDesk is reached at (used to build the callback). |
+| `TRUSTDESK_LOCAL_LOGIN` | `false` removes the admin-password login when SSO is on (default keeps it as a break-glass). |
+| `TRUSTDESK_ENCRYPTION_KEY[_FILE]` | With SSO only (no admin password) this lets TrustDesk create and unlock its vault for stored provider keys. |
+
+| Role | May |
+|---|---|
+| `admin` | everything, including provider accounts, tokens, validation settings and demo data |
+| `approver` | read and search, ask, submit requests, **decide requests**, run validation again, open reports |
+| `viewer` | read and search, see requests, their AI advice and reports; cannot decide |
+
+Services use `client_credentials` instead of a hand-copied token: scope `trustdesk.requests.write` makes a service a client
+application (create employees and requests, no AI advice, no decisions), `trustdesk.kb.read` lets it search, `trustdesk.metrics`
+lets it scrape. Local API tokens keep working beside them. Decisions are recorded under the approver's name.
+
 ## Compliance workflow
 
 1. **Load the rules.** Under **Documents**, upload your policies (Markdown, text or PDF) and tag them (HR, travel, expense, governance, security). **Load demo policies** adds a fictional "Acme" pack covering vacation, sick and parental leave, remote work, overtime, travel, expenses, customer entertainment and who approves what.

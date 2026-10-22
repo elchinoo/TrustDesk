@@ -1,5 +1,5 @@
-import { api } from "/static/api.js";
-import { $, ADVICE, badge, COMPLIANCE, fill, fmtDateTime, fmtDay, h, STATUS, toast } from "/static/ui.js";
+import { api } from "/kit/api.js";
+import { $, ADVICE, badge, COMPLIANCE, fill, fmtDateTime, fmtDay, h, STATUS, toast } from "/kit/ui.js";
 
 let wired = false;
 let catalogue = [];

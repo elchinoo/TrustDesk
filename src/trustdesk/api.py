@@ -4,16 +4,18 @@ import time
 from pathlib import Path
 
 import psycopg
+from apgkit.auth.rp import safe_return_to
+from apgkit.config import env_bool
+from apgkit.guard import SecurityGuard
+from apgkit.web import is_https, mount_kit_static, public_url
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from starlette.middleware.base import BaseHTTPMiddleware
 
-from . import __version__, accounts, api_v1, auth, embedcfg, metrics, reembed_job, seedpack, vault
+from . import __version__, accounts, api_v1, core, embedcfg, metrics, reembed_job, seedpack, vault
 from . import ask as asker
-from .auth import Principal
-from .config import get_settings
+from .core import COOKIE, CSRF_HEADER, auth, fed, local
 from .db import connect, connect_vector
 from .embeddings import embed as embed_texts
 from .ingest import ingest_text, parse_bytes, safe_source_name
@@ -29,8 +31,6 @@ MAX_QUERY = 500
 mcp_app = mcp.streamable_http_app(streamable_http_path="/", host="0.0.0.0")
 
 
-COOKIE = "td_session"
-CSRF_HEADER = "x-trustdesk-csrf"
 _announced = False
 _auto_unlock_tried = False
 
@@ -42,7 +42,7 @@ def _announce_setup_code() -> None:
         _announced = True
         print("\n=== TrustDesk first-run setup ===\n"
               f"Open the app in your browser and enter this one-time code to create the admin password:\n"
-              f"    {auth.setup_code()}\n"
+              f"    {local.setup_code()}\n"
               "(It changes every time the server restarts until setup is complete.)\n", file=sys.stderr, flush=True)
 
 
@@ -52,8 +52,11 @@ def _startup_tasks() -> None:
     try:
         with connect(retries=1) as conn:
             _auto_unlock_tried = True
+            if fed.enabled and not vault.is_initialized(conn):
+                core.vault.initialize_with_platform_secret(conn)   # single sign-on only: no admin password to wrap the key with
+                conn.commit()
             vault.try_unlock_with_platform_secret(conn)
-            if auth.needs_setup(conn):
+            if local.needs_setup(conn) and not fed.enabled:
                 _announce_setup_code()
     except Exception:  # noqa: BLE001 - database may be asleep; it is retried on the first request
         pass
@@ -66,146 +69,77 @@ async def lifespan(_: FastAPI):
         yield
 
 
-# --- authentication -------------------------------------------------------------------------
-# Fail closed: with no credential configured every protected route is denied (and the setup flow is offered),
-# unless the operator explicitly sets TRUSTDESK_ALLOW_ANONYMOUS=true.
+# --- authentication ---------------------------------------------------------------------------------------
+# Fail closed: with no credential configured every protected route is denied (and the setup flow is offered), unless
+# the operator explicitly sets TRUSTDESK_ALLOW_ANONYMOUS=true. The mechanics (local admin, API tokens, federated JWTs,
+# sessions, rate limiting) are agentpg-kit's `Authenticator`; here we only name the permission each route needs.
 
-_FAIL_WINDOW, _FAIL_LIMIT = 60.0, 10
-_failures: dict[str, list[float]] = {}
-
-
-def _client(request: Request) -> str:
-    return request.client.host if request.client else "?"
+_LEGACY = {"read": "kb:read", "full": "settings:manage", "metrics": "metrics:scrape", "client": "requests:client"}
 
 
-def _rate_limited(client: str) -> bool:
-    now = time.monotonic()
-    recent = [t for t in _failures.get(client, []) if now - t < _FAIL_WINDOW]
-    _failures[client] = recent
-    return len(recent) >= _FAIL_LIMIT
+def authenticate(request: Request, *, allow_cookie: bool = True):
+    return auth.authenticate(request, allow_cookie=allow_cookie)
 
 
-def _record_failure(client: str) -> None:
-    _failures.setdefault(client, []).append(time.monotonic())
-    if len(_failures) > 10_000:  # bound memory under address churn
-        _failures.clear()
+def require(*perms: str):
+    """Dependency factory. Each argument is a permission (`requests:decide`) or one of the old scope names (read, full, metrics,
+    client); the caller needs ANY of them. With no argument: `kb:read`."""
+    wanted = [_LEGACY.get(p, p) for p in (perms or ("kb:read",))]
+    if len(wanted) == 1:
+        return auth.require(wanted[0])
 
-
-def _bearer(request: Request) -> str | None:
-    header = request.headers.get("authorization", "")
-    return header[7:].strip() if header[:7].lower() == "bearer " else None
-
-
-def _is_https(request: Request) -> bool:
-    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https"
-
-
-def _db_unavailable() -> HTTPException:
-    return HTTPException(503, "database unavailable; it may be waking up, retry in a few seconds")
-
-
-def authenticate(request: Request, *, allow_cookie: bool = True) -> Principal | None:
-    """Return the caller's Principal, or None if no credential was presented. Raises 401/429 for bad credentials."""
-    if get_settings().allow_anonymous:
-        return Principal("anonymous", "full")
-    client = _client(request)
-    if _rate_limited(client):
-        raise HTTPException(429, "too many failed attempts; wait a minute")
-    raw = _bearer(request)
-    if raw is not None:
-        if auth.static_key_matches(raw):
-            return Principal("static", "full")
-        if raw.startswith(auth.TOKEN_PREFIX):
-            try:
-                with connect(retries=1) as conn:
-                    principal = auth.token_principal(conn, raw)
-            except (psycopg.Error, RuntimeError) as exc:
-                raise _db_unavailable() from exc
-            if principal:
-                return principal
-        _record_failure(client)
-        raise HTTPException(401, "invalid credentials")
-    cookie = request.cookies.get(COOKIE) if allow_cookie else None
-    if cookie:
-        try:
-            with connect(retries=1) as conn:
-                ok = auth.session_valid(conn, cookie)
-        except (psycopg.Error, RuntimeError) as exc:
-            raise _db_unavailable() from exc
-        if ok:
-            return Principal("session", "full")
-    return None
-
-
-def require(scope: str = "read"):
-    """Dependency: the caller must hold `scope`. 'full' (admin session or full token) satisfies everything; a 'read'
-    token only reads and a 'metrics' token only scrapes /metrics."""
-
-    def dep(request: Request) -> Principal:
-        principal = authenticate(request)
-        if principal is None:
+    def dep(request: Request):
+        p = auth.authenticate(request)
+        if p is None:
             raise HTTPException(401, "authentication required")
-        if principal.scope != "full" and principal.scope != scope:
-            raise HTTPException(403, f"this token cannot do that (it is a '{principal.scope}' token)")
-        return principal
-
+        if not any(p.can(w) for w in wanted):
+            raise HTTPException(403, f"this credential cannot do that (it needs one of: {', '.join(wanted)})")
+        return p
     return dep
 
 
-class Guard(BaseHTTPMiddleware):
-    """MCP bearer auth (route dependencies don't apply to mounts), CSRF check, and security headers."""
+def _client(request: Request) -> str:
+    return auth.client(request)
 
-    async def dispatch(self, request, call_next):
-        started = time.perf_counter()
-        status = 500
+
+def _db_unavailable() -> HTTPException:
+    return auth.db_unavailable()
+
+
+class McpGuard:
+    """MCP never accepts browser cookies; the credential must carry `mcp:use` (a read or full token, or a federated user or
+    service allowed to). Scrape-only and client-application credentials are refused."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/mcp"):
+            return await self.app(scope, receive, send)
+        if scope["path"] == "/mcp":
+            # Serve the bare path directly: the mount would answer with a redirect, and behind a TLS-terminating proxy that
+            # redirect can point at http://, where clients (rightly) drop the Authorization header.
+            scope["path"] = scope["raw_path"] = "/mcp/"
+        request = Request(scope, receive)
         try:
-            resp = await self._dispatch(request, call_next)
-            status = resp.status_code
-            return resp
-        finally:
-            route = request.scope.get("route")
-            label = getattr(route, "path", None) or ("/mcp" if request.url.path.startswith("/mcp") else "other")
-            if label != "/metrics":
-                metrics.observe(request.method, label, status, started)
-
-    async def _dispatch(self, request, call_next):
-        path = request.url.path
-        if path == "/mcp":
-            # Serve the bare path directly: the mount would answer with a redirect, and behind a TLS-terminating
-            # proxy that redirect can point at http://, where clients (rightly) drop the Authorization header.
-            request.scope["path"] = request.scope["raw_path"] = "/mcp/"
-            path = "/mcp/"
-        if path.startswith("/mcp"):
-            try:
-                principal = authenticate(request, allow_cookie=False)  # MCP never accepts cookies
-            except HTTPException as exc:
-                return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
-            if principal is None:
-                return JSONResponse({"error": "authentication required"}, status_code=401)
-            if principal.scope in {"metrics", "client"}:  # scrape-only and client-app tokens never read the knowledge base
-                return JSONResponse({"error": f"{principal.scope} tokens cannot use MCP"}, status_code=403)
-        elif (path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}
-              and _bearer(request) is None and not request.headers.get(CSRF_HEADER)):
-            # Cookie-authenticated (browser) writes must carry a custom header, which cross-site pages can't set.
-            return JSONResponse({"detail": "missing CSRF header"}, status_code=403)
-        resp = await call_next(request)
-        resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["X-Frame-Options"] = "DENY"
-        resp.headers["Referrer-Policy"] = "no-referrer"
-        resp.headers["Cache-Control"] = resp.headers.get("Cache-Control", "no-store")
-        resp.headers["Content-Security-Policy"] = (
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
-            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-        )
-        return resp
+            principal = auth.authenticate(request, allow_cookie=False)
+        except HTTPException as exc:
+            return await JSONResponse({"error": exc.detail}, status_code=exc.status_code)(scope, receive, send)
+        if principal is None:
+            return await JSONResponse({"error": "authentication required"}, status_code=401)(scope, receive, send)
+        if not principal.can("mcp:use"):
+            return await JSONResponse({"error": "this credential cannot use MCP"}, status_code=403)(scope, receive, send)
+        await self.app(scope, receive, send)
 
 
 # Interactive API docs load scripts from a CDN and expose the schema; keep them off.
 app = FastAPI(title="TrustDesk", version=__version__, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
-app.add_middleware(Guard)
+app.add_middleware(McpGuard)
+app.add_middleware(SecurityGuard, csrf_header=CSRF_HEADER, csrf_prefixes=("/api/",), body_prefixes=(), observe=core.metrics.observe)
 app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+mount_kit_static(app)
 
 
 
@@ -355,15 +289,15 @@ class TokenBody(BaseModel):
     scope: str = Field(pattern="^(read|metrics|client|full)$")
 
 
-def _start_session(conn, request: Request, response: Response) -> None:
-    raw = auth.create_session(conn)
-    response.set_cookie(COOKIE, raw, httponly=True, samesite="strict", secure=_is_https(request),
-                        max_age=auth.SESSION_HOURS * 3600, path="/")
+def _start_session(conn, request: Request, response: Response, **who) -> None:
+    raw = local.create_session(conn, **who)
+    response.set_cookie(COOKIE, raw, httponly=True, samesite="strict" if not who else "lax", secure=is_https(request),
+                        max_age=12 * 3600, path="/")
 
 
 def _guard_attempts(request: Request) -> str:
-    client = _client(request)
-    if _rate_limited(client):
+    client = auth.client(request)
+    if auth.limiter.limited(client):
         raise HTTPException(429, "too many failed attempts; wait a minute")
     return client
 
@@ -379,9 +313,9 @@ def session_state(request: Request):
             if not _auto_unlock_tried:
                 _auto_unlock_tried = True
                 vault.try_unlock_with_platform_secret(conn)
-            setup = auth.needs_setup(conn) and not get_settings().allow_anonymous
+            setup = local.needs_setup(conn) and not env_bool("TRUSTDESK_ALLOW_ANONYMOUS") and not fed.enabled
             v = vault.status(conn)
-            has_password = auth.admin_configured(conn)
+            has_password = local.admin_configured(conn)
     except HTTPException:
         raise
     except (psycopg.Error, RuntimeError) as exc:
@@ -389,8 +323,50 @@ def session_state(request: Request):
     if setup:
         _announce_setup_code()
     state = "setup_required" if setup else "logged_in" if principal else "logged_out"
-    return {"state": state, "vault": v, "has_admin_password": has_password,
-            "password_login": has_password, "key_login": auth.static_key_configured()}
+    out = {"state": state, "vault": v, "has_admin_password": has_password,
+           "password_login": has_password and (fed.local_login or not fed.enabled), "key_login": local.static_key_configured() and (fed.local_login or not fed.enabled),
+           "sso": {"issuer": fed.issuer, "login_url": "/auth/login"} if fed.enabled else None}
+    if principal:
+        out["user"] = {"name": principal.name, "email": principal.email, "source": principal.source, "roles": sorted(principal.roles),
+                       "permissions": ["*"] if "*" in principal.permissions else sorted(principal.permissions)}
+    return out
+
+
+# ---- federated sign-in (only when TRUSTDESK_OIDC_ISSUER is set) ----------------------------------------------
+@app.get("/auth/login")
+def sso_login(request: Request, next: str | None = None):
+    if not fed.enabled:
+        raise HTTPException(404, "single sign-on is not configured")
+    try:
+        with connect(retries=1) as conn:
+            url = fed.rp.begin(conn, public_url(request, core.public_url_env) + "/auth/callback", next)
+    except psycopg.Error as exc:
+        raise _db_unavailable() from exc
+    except Exception:  # noqa: BLE001 - the identity provider may be unreachable
+        return RedirectResponse("/?sso_error=the identity provider is unavailable", status_code=303)
+    return RedirectResponse(url, status_code=303)
+
+
+@app.get("/auth/callback")
+def sso_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    if not fed.enabled:
+        raise HTTPException(404, "single sign-on is not configured")
+    if error or not code or not state:
+        return RedirectResponse("/?sso_error=the sign-in was cancelled or failed", status_code=303)
+    from apgkit.auth import TokenError
+    try:
+        with connect(retries=1) as conn:
+            claims, back, id_token = fed.rp.finish(conn, public_url(request, core.public_url_env) + "/auth/callback", code, state)
+            roles = [r for r in claims.get("roles", []) if isinstance(r, str)]
+            resp = RedirectResponse(safe_return_to(back), status_code=303)
+            principal_roles = core.APP_AUTH.permissions_for(roles=roles)
+            if not principal_roles:
+                return RedirectResponse("/?sso_error=your account has no role in TrustDesk; ask an administrator", status_code=303)
+            _start_session(conn, request, resp, subject=str(claims["sub"]), name=str(claims.get("name") or ""), email=str(claims.get("email") or ""),
+                           roles=roles, source="oidc", id_token_hint=id_token)
+            return resp
+    except TokenError as exc:
+        return RedirectResponse("/?sso_error=" + str(exc)[:120], status_code=303)
 
 
 @app.post("/api/setup")
@@ -399,9 +375,9 @@ def setup(body: SetupBody, request: Request, response: Response):
     try:
         with connect(retries=1) as conn:
             try:
-                auth.complete_setup(conn, body.code, body.password)
+                local.complete_setup(conn, body.code, body.password)
             except PermissionError as exc:
-                _record_failure(client)
+                auth.limiter.record(client)
                 raise HTTPException(403, str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
@@ -418,12 +394,12 @@ def login(body: LoginBody, request: Request, response: Response):
         with connect(retries=1) as conn:
             ok = False
             if body.password is not None:
-                ok = auth.login_password(conn, body.password)
-            elif body.api_key is not None and auth.static_key_matches(body.api_key):
+                ok = local.login_password(conn, body.password)
+            elif body.api_key is not None and local.static_key_matches(body.api_key):
                 ok = True
                 vault.try_unlock_with_platform_secret(conn)
             if not ok:
-                _record_failure(client)
+                auth.limiter.record(client)
                 raise HTTPException(401, "invalid credentials")
             _start_session(conn, request, response)
     except (psycopg.Error, RuntimeError) as exc:
@@ -433,13 +409,17 @@ def login(body: LoginBody, request: Request, response: Response):
 
 @app.post("/api/logout")
 def logout(request: Request, response: Response):
+    out: dict = {"ok": True}
     try:
         with connect(retries=1) as conn:
-            auth.delete_session(conn, request.cookies.get(COOKIE))
+            row = local.delete_session(conn, request.cookies.get(COOKIE))
+        if row and row["source"] == "oidc" and fed.enabled:
+            with contextlib.suppress(Exception):
+                out["logout_url"] = fed.rp.logout_url(row["id_token_hint"], public_url(request, core.public_url_env) + "/")
     except (psycopg.Error, RuntimeError):
         pass  # the cookie is cleared regardless; the session row expires on its own
     response.delete_cookie(COOKIE, path="/")
-    return {"ok": True}
+    return out
 
 
 @app.post("/api/vault/unlock", dependencies=[Depends(require("full"))])
@@ -449,7 +429,7 @@ def unlock_vault(body: UnlockBody, request: Request):
         if not vault.is_initialized(conn):
             raise HTTPException(409, "no provider keys are stored yet; set an admin password first")
         if not vault.unlock_with_password(conn, body.password):
-            _record_failure(client)
+            auth.limiter.record(client)
             raise HTTPException(403, "wrong password")  # 403, not 401: the session itself is still valid
         conn.commit()
     return {"ok": True}
@@ -461,14 +441,14 @@ def admin_password(body: PasswordBody, request: Request):
     client = _guard_attempts(request)
     with connect() as conn:
         try:
-            if auth.admin_configured(conn):
+            if local.admin_configured(conn):
                 if body.current is None:
                     raise HTTPException(422, "current password is required")
-                auth.change_password(conn, body.current, body.new)
+                local.change_password(conn, body.current, body.new)
             else:
-                auth.set_admin_password(conn, body.new)
+                local.set_admin_password(conn, body.new)
         except PermissionError as exc:
-            _record_failure(client)
+            auth.limiter.record(client)
             raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
@@ -480,21 +460,21 @@ def admin_password(body: PasswordBody, request: Request):
 @app.get("/api/tokens", dependencies=[Depends(require("full"))])
 def list_tokens():
     with connect() as conn:
-        return auth.list_tokens(conn)
+        return local.list_tokens(conn)
 
 
 @app.post("/api/tokens", dependencies=[Depends(require("full"))])
 def create_token(body: TokenBody):
     """The token value is returned exactly once; only its hash is stored."""
     with connect() as conn:
-        token_id, raw = auth.create_token(conn, body.name.strip(), body.scope)
+        token_id, raw = local.create_token(conn, body.name.strip(), body.scope)
     return {"id": token_id, "token": raw, "scope": body.scope, "name": body.name.strip()}
 
 
 @app.delete("/api/tokens/{token_id}", dependencies=[Depends(require("full"))])
 def revoke_token(token_id: int):
     with connect() as conn:
-        if not auth.revoke_token(conn, token_id):
+        if not local.revoke_token(conn, token_id):
             raise HTTPException(404, "token not found or already revoked")
     return {"revoked": token_id}
 

@@ -1,9 +1,10 @@
 import json
 
+import apgkit.llm as apgkit_llm
 import httpx
 import pytest
 
-from trustdesk import embeddings, llm_http
+from trustdesk import core, embeddings
 from trustdesk.embeddings import EmbeddingError
 
 SECRET = "sk-" + "test" * 5  # fake placeholder  # pragma: allowlist secret
@@ -16,11 +17,11 @@ def llm(monkeypatch):
     monkeypatch.setenv("EMBEDDING_MODEL", "some-model")
     monkeypatch.setenv("EMBEDDING_DIM", "4")
     monkeypatch.delenv("EMBEDDING_SEND_DIMENSIONS", raising=False)
-    monkeypatch.setattr(llm_http.time, "sleep", lambda _: None)
+    monkeypatch.setattr(apgkit_llm.time, "sleep", lambda _: None)
 
 
 def _use(monkeypatch, handler):
-    monkeypatch.setattr(llm_http, "_client", lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(core.llm, "_http", lambda: httpx.Client(transport=httpx.MockTransport(handler)))
 
 
 def _ok(request):

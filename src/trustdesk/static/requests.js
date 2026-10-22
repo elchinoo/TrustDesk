@@ -1,5 +1,6 @@
-import { api } from "/static/api.js";
-import { $, ADVICE, badge, COMPLIANCE, field, fill, fmtDateTime, fmtDay, h, money, STATUS, toast } from "/static/ui.js";
+import { api } from "/kit/api.js";
+import { can } from "/kit/session.js";
+import { $, ADVICE, badge, COMPLIANCE, field, fill, fmtDateTime, fmtDay, h, money, STATUS, toast } from "/kit/ui.js";
 
 const filters = { status: "open", type: "", q: "", employee_no: "", ai: "" };
 const PAGE = 50;
@@ -16,6 +17,7 @@ export function showEmployeeRequests(employeeNo) {
 }
 
 export async function initRequests() {
+  $("req-new").hidden = !can("requests:client");
   if (!wired) {
     wired = true;
     $("req-new").addEventListener("click", openNew);
@@ -224,6 +226,9 @@ async function rerun(d) {
 }
 
 function decisionCard(d, v) {
+  if (!can("requests:decide") && ["pending_review", "needs_info"].includes(d.status)) {
+    return h("section", { class: "card" }, h("h3", {}, "Decision"), h("p", { class: "muted" }, "Your role can read requests but not decide them."));
+  }
   if (!["pending_review", "needs_info"].includes(d.status)) {
     return h("section", { class: "card" }, h("h3", {}, "Decision"),
       h("p", {}, badge(STATUS, d.status), ` by ${d.decided_by || "n/a"} ${d.decided_at ? "on " + fmtDateTime(d.decided_at) : ""}`),

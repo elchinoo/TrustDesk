@@ -1,5 +1,5 @@
-import { api } from "/static/api.js";
-import { $, field, fill, fmtDay, h, toast } from "/static/ui.js";
+import { api } from "/kit/api.js";
+import { $, field, fill, fmtDay, h, toast } from "/kit/ui.js";
 import { showEmployeeRequests } from "/static/requests.js";
 
 let wired = false;

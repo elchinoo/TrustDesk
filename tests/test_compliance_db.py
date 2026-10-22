@@ -323,7 +323,7 @@ def test_decision_rules(client, model, seeded):
     assert asked.status_code == 200 and asked.json()["status"] == "needs_info"
     assert d("request_info", "again?").status_code == 409
     done = d("approve")
-    assert done.status_code == 200 and done.json()["status"] == "approved" and done.json()["decided_by"] == "api-key"
+    assert done.status_code == 200 and done.json()["status"] == "approved" and done.json()["decided_by"] == "api key"
     assert done.json()["override"] is False
     assert d("reject", "too late now").status_code == 409  # already decided
     assert client.post(f"/api/v1/requests/{ref}/withdraw", headers=ADMIN).status_code == 409

@@ -1,33 +1,18 @@
 """Prometheus metrics for this app, using the same metric names every app in the family exposes
 (http_requests_total, http_request_duration_seconds, db_up, app_info, process_*), so one agent preset reads them all."""
-import time
-
-from prometheus_client import (
-    CONTENT_TYPE_LATEST,
-    CollectorRegistry,
-    Counter,
-    Gauge,
-    Histogram,
-    generate_latest,
-)
+from prometheus_client import Counter, Histogram
 from prometheus_client.core import GaugeMetricFamily
-from prometheus_client.process_collector import ProcessCollector
 
-from . import __version__
+from .core import metrics as _kit
 
 APP = "trustdesk"
-REGISTRY = CollectorRegistry()
-ProcessCollector(registry=REGISTRY)
-REQUESTS = Counter("http_requests_total", "HTTP requests handled", ["app", "method", "route", "status"], registry=REGISTRY)
-LATENCY = Histogram("http_request_duration_seconds", "HTTP request latency", ["app", "route"], registry=REGISTRY,
-                    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10))
-INFO = Gauge("app_info", "Build information", ["app", "version"], registry=REGISTRY)
-INFO.labels(APP, __version__).set(1)
-VALIDATIONS = Counter("trustdesk_validations_total", "AI pre-validations finished", ["state", "recommendation"],
-                      registry=REGISTRY)
+REGISTRY = _kit.registry          # the kit's registry already carries http_requests_total, http_request_duration_seconds, app_info, process_*
+observe = _kit.observe
+render = _kit.render
+SEARCHES = Counter("trustdesk_searches_total", "Searches and questions answered", ["kind"], registry=REGISTRY)
+VALIDATIONS = Counter("trustdesk_validations_total", "AI pre-validations finished", ["state", "recommendation"], registry=REGISTRY)
 VALIDATION_SECONDS = Histogram("trustdesk_validation_duration_seconds", "AI pre-validation duration", registry=REGISTRY,
                                buckets=(0.5, 1, 2.5, 5, 10, 20, 40, 80, 160))
-SEARCHES = Counter("trustdesk_searches_total", "Searches and questions answered", ["kind"], registry=REGISTRY)
 
 
 class DatabaseCollector:
@@ -71,12 +56,3 @@ class DatabaseCollector:
 
 
 REGISTRY.register(DatabaseCollector())
-
-
-def observe(method: str, route: str, status: int, started: float) -> None:
-    REQUESTS.labels(APP, method, route, str(status)).inc()
-    LATENCY.labels(APP, route).observe(time.perf_counter() - started)
-
-
-def render() -> tuple[bytes, str]:
-    return generate_latest(REGISTRY), CONTENT_TYPE_LATEST

@@ -1,5 +1,5 @@
-import { api, ApiError } from "/static/api.js";
-import { $, fmtDate, h, toast } from "/static/ui.js";
+import { api, ApiError } from "/kit/api.js";
+import { $, fmtDate, h, toast } from "/kit/ui.js";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const OK_EXT = /\.(md|markdown|txt|pdf)$/i;
