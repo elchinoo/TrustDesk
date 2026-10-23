@@ -25,6 +25,10 @@ export async function initSearch() {
     if (s.reembedding) {
       b.hidden = false;
       b.textContent = "Re-embedding is in progress. Search is paused until it finishes.";
+    } else if (s.needs_reembedding) {
+      b.hidden = false;
+      b.replaceChildren("Needs re-embedding: the index stores ", String(s.stored_dimension), "-dimension vectors but the embedder produces ", String(s.dimension),
+        ". Search matches words only until it is re-embedded. ", h("a", { href: "#settings" }, "Open Settings"), " and use the embedding account again, or run `trustdesk reembed`.");
     } else if (s.documents === 0) {
       b.hidden = false;
       b.replaceChildren("Your knowledge base is empty. ", h("a", { href: "#documents" }, "Upload documents or load the demo policies"), " to start searching.");

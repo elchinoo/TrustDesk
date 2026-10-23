@@ -100,25 +100,25 @@ def _start() -> int:
         return 1
     print("migrations applied:", ", ".join(applied) if applied else "none (up to date)")
     from . import embedcfg
-    from .migrate import column_dim
+    from .migrate import embedding_state, reconcile_on_startup
 
+    reconcile_on_startup(progress=lambda m: print(m, file=sys.stderr, flush=True))   # never raises, never exits
     with connect() as conn:
-        have = column_dim(conn)
         embedcfg.ensure_loaded(conn)
-    want = embedcfg.current().dim
-    if have is not None and have != want:
-        print(f"startup failed: the database stores {have}-dimension vectors but the configured embedder uses {want}.\n"
-              f"Set EMBEDDING_DIM={have} to match, or run `trustdesk reembed` to convert the index to {want}.",
-              file=sys.stderr)
-        return 1
+        fits = not embedding_state(conn)["needs_reembedding"]
     if os.environ.get("AUTO_SEED", "").lower() in {"1", "true", "yes"}:
         with connect() as conn:
             empty = conn.execute("SELECT NOT EXISTS (SELECT 1 FROM kb_document) AS e").fetchone()["e"]
-        if empty:
+        if empty and not fits:
+            print("WARNING: AUTO_SEED skipped: the index needs re-embedding first", file=sys.stderr)
+        elif empty:
             from .seedpack import load
 
-            for r in load():
-                print(f"seed {r['source']}: {r['status']}")
+            try:
+                for r in load():
+                    print(f"seed {r['source']}: {r['status']}")
+            except Exception as exc:  # noqa: BLE001 - e.g. provider down: the app still comes up, the seed is retried next start
+                print(f"WARNING: AUTO_SEED skipped: {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
     _serve()
     return 0
 

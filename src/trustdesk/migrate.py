@@ -92,3 +92,86 @@ def reembed(cfg=None, batch: int = 64, progress=print, on_count=None) -> dict:
         )
         conn.commit()
     return {"chunks": done, "dimension": cfg.dim, "previous_dimension": current}
+
+
+# --- startup reconciliation ---------------------------------------------------------------------------
+AUTO_REEMBED_MAX = 5000   # up to this many chunks the container re-embeds by itself at startup
+_RECONCILE_LOCK = 7204201
+
+
+class NeedsReembedding(RuntimeError):
+    """The stored vectors have another size than the configured embedder produces: search degrades, uploads are refused."""
+
+
+_startup: dict = {"message": ""}
+
+
+def embedding_state(conn, cfg=None) -> dict:
+    """Stored vs configured vector size. `needs_reembedding` is what the status API and the UI show."""
+    from . import embedcfg
+
+    cfg = cfg or embedcfg.current()
+    have = column_dim(conn)
+    needs = have is not None and have != cfg.dim
+    return {"stored_dimension": have, "configured_dimension": cfg.dim, "needs_reembedding": needs,
+            "reason": (_startup["message"] or f"the index stores {have}-dimension vectors but the embedder produces "
+                       f"{cfg.dim}") if needs else ""}
+
+
+def ensure_fits(conn, cfg=None) -> None:
+    st = embedding_state(conn, cfg)
+    if st["needs_reembedding"]:
+        raise NeedsReembedding(
+            f"the index stores {st['stored_dimension']}-dimension vectors but the configured embedder produces "
+            f"{st['configured_dimension']}: it needs re-embedding (run `trustdesk reembed` or switch embeddings in Settings)")
+
+
+def reconcile_on_startup(max_chunks: int = AUTO_REEMBED_MAX, progress=print) -> dict:
+    """If kb_chunk's vector size differs from the configured one, fix it when the corpus is small, otherwise say so.
+
+    Never raises: a provider failure, an unindexable size or a big corpus is logged as one clear line and the app comes
+    up regardless (search falls back to full-text, uploads are refused with 503 until re-embedded). `reembed` is atomic,
+    so a failure leaves the old data intact. Returns {"action": none|reembedded|too_large|refused|failed, ...}."""
+    from . import embedcfg
+    from .db import connect_vector
+
+    try:
+        with connect_vector() as conn:
+            embedcfg.ensure_loaded(conn)
+            cfg = embedcfg.current()
+            have = column_dim(conn)
+            if have is None or have == cfg.dim:
+                _startup["message"] = ""
+                return {"action": "none", "stored": have, "configured": cfg.dim}
+            chunks = conn.execute("SELECT count(*) AS n FROM kb_chunk").fetchone()["n"]
+            conn.rollback()
+            head = f"the index stores {have}-dimension vectors but the configured embedder uses {cfg.dim}"
+            if cfg.dim > MAX_HNSW_DIM:
+                msg = (f"{head}; {cfg.dim} exceeds the {MAX_HNSW_DIM}-dimension limit for indexed vectors, so it cannot be "
+                       f"applied. Set EMBEDDING_DIM to {have} or a size up to {MAX_HNSW_DIM}.")
+                _startup["message"] = msg
+                progress(f"WARNING: {msg}")
+                return {"action": "refused", "stored": have, "configured": cfg.dim, "message": msg}
+            if chunks > max_chunks:
+                msg = (f"{head}; {chunks} chunks is more than the automatic limit of {max_chunks}. Search uses full-text only "
+                       "and uploads are refused until you run `trustdesk reembed` (or switch embeddings in Settings).")
+                _startup["message"] = msg
+                progress(f"WARNING: {msg}")
+                return {"action": "too_large", "stored": have, "configured": cfg.dim, "chunks": chunks, "message": msg}
+            if not conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (_RECONCILE_LOCK,)).fetchone()["ok"]:
+                return {"action": "none", "stored": have, "configured": cfg.dim, "message": "another instance is re-embedding"}
+            try:
+                progress(f"{head}: re-embedding {chunks} chunks")
+                r = reembed(cfg=cfg, progress=lambda m: None)
+            finally:
+                conn.execute("SELECT pg_advisory_unlock(%s)", (_RECONCILE_LOCK,))
+                conn.commit()
+        _startup["message"] = ""
+        progress(f"re-embedded {r['chunks']} chunks: vector size {r['previous_dimension']} -> {r['dimension']}")
+        return {"action": "reembedded", **r}
+    except Exception as exc:  # noqa: BLE001 - startup must survive provider, network and index problems
+        msg = (f"automatic re-embedding failed, nothing was changed ({type(exc).__name__}: {str(exc)[:200]}). Search uses "
+               "full-text only and uploads are refused until `trustdesk reembed` succeeds.")
+        _startup["message"] = msg
+        progress(f"WARNING: {msg}")
+        return {"action": "failed", "message": msg}

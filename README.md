@@ -120,6 +120,8 @@ You can also configure a single provider from the environment instead of the bro
 
 From a terminal, `trustdesk reembed` re-embeds everything after you change these.
 
+If the database was created with another size than `EMBEDDING_DIM` now says, startup no longer fails: with up to 5000 chunks it re-embeds by itself (atomic; if the provider is down nothing changes and one warning is logged); with more, or for a size above 2000, it logs a warning and starts anyway. Until re-embedded, search uses full-text only, uploads answer 503, and `GET /api/embeddings/status` and `/api/stats` report `needs_reembedding` (the UI shows a banner). Run `trustdesk reembed`, or activate the embedding account again in Settings, to fix it.
+
 ## Single sign-on and roles (the ecosystem identity provider)
 
 TrustDesk can run **standalone** (the first-run setup code and an admin password, as above) or **federated** with the ecosystem's

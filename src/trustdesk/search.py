@@ -7,16 +7,13 @@ from pgvector import Vector
 from . import embedcfg
 from .db import connect_vector
 from .embeddings import embed
+from .migrate import column_dim
 
 RRF_K = 60
 
 _SQL = """
 WITH vec AS (
-    SELECT c.id, row_number() OVER (ORDER BY c.embedding <=> %(qv)s) AS rnk
-    FROM kb_chunk c JOIN kb_document d ON d.id = c.doc_id
-    WHERE c.org_id = %(org)s AND (%(doc_type)s::text IS NULL OR d.doc_type = %(doc_type)s)
-    ORDER BY c.embedding <=> %(qv)s
-    LIMIT %(k)s
+    __VEC__
 ), tq AS (  -- OR semantics: questions are long, passages short; ranking favours more matching terms
     SELECT replace(plainto_tsquery('english', %(q)s)::text, '&', '|')::tsquery AS q
 ), lex AS (
@@ -41,18 +38,28 @@ LIMIT %(limit)s
 """
 
 
+_VEC = """SELECT c.id, row_number() OVER (ORDER BY c.embedding <=> %(qv)s) AS rnk
+    FROM kb_chunk c JOIN kb_document d ON d.id = c.doc_id
+    WHERE c.org_id = %(org)s AND (%(doc_type)s::text IS NULL OR d.doc_type = %(doc_type)s)
+    ORDER BY c.embedding <=> %(qv)s
+    LIMIT %(k)s"""
+_NO_VEC = "SELECT NULL::bigint AS id, NULL::bigint AS rnk WHERE false"   # full-text only
+
+
 def hybrid_search(query: str, *, org_id: str = "default", doc_type: str | None = None,
                   limit: int = 5, candidates: int = 30, conn=None) -> list[dict]:
     own = conn is None
     conn = conn or connect_vector()
     try:
         embedcfg.ensure_loaded(conn)
-        qv = embed([query])[0]
-        rows = conn.execute(
-            _SQL,
-            {"qv": Vector(qv), "q": query, "org": org_id, "doc_type": doc_type, "k": candidates,
-             "rrf": RRF_K, "limit": limit},
-        ).fetchall()
+        params = {"q": query, "org": org_id, "doc_type": doc_type, "k": candidates, "rrf": RRF_K, "limit": limit}
+        have = column_dim(conn)
+        if have is None or have == embedcfg.current().dim:
+            params["qv"] = Vector(embed([query])[0])
+            sql = _SQL.replace("__VEC__", _VEC)
+        else:  # the stored vectors have another size (EMBEDDING_DIM changed, not re-embedded yet): never a 500
+            sql = _SQL.replace("__VEC__", _NO_VEC)
+        rows = conn.execute(sql, params).fetchall()
     finally:
         if own:
             conn.close()

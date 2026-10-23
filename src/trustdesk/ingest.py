@@ -9,6 +9,7 @@ from . import embedcfg
 from .chunking import chunk_markdown
 from .db import connect_vector
 from .embeddings import embed
+from .migrate import ensure_fits
 
 MAX_PDF_PAGES = 500
 
@@ -56,6 +57,7 @@ def ingest_text(
             return {"doc_id": None, "chunks": 0, "status": "empty"}
         embedcfg.ensure_loaded(conn)
         cfg = embedcfg.current()
+        ensure_fits(conn, cfg)  # NeedsReembedding (HTTP 503) instead of a database error on a vector of the wrong size
         vectors = embed([f"{c.heading}\n{c.body}" for c in chunks], cfg)
         doc = conn.execute(
             "INSERT INTO kb_document (org_id, title, source, doc_type, version, sha256) "

@@ -21,6 +21,7 @@ from .embeddings import embed as embed_texts
 from .ingest import ingest_text, parse_bytes, safe_source_name
 from .llm_http import LLMError
 from .mcp_server import mcp
+from .migrate import NeedsReembedding, embedding_state
 from .netguard import UnsafeURL
 from .search import hybrid_search
 
@@ -152,6 +153,8 @@ def _translate():
         raise HTTPException(423, str(exc)) from exc  # 423 Locked: sign in / unlock to continue
     except vault.VaultError as exc:
         raise HTTPException(409, str(exc)) from exc
+    except NeedsReembedding as exc:
+        raise HTTPException(503, str(exc)) from exc
     except (accounts.AccountError, UnsafeURL, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     except LLMError as exc:
@@ -258,8 +261,10 @@ def stats():
         row = conn.execute(
             "SELECT (SELECT count(*) FROM kb_document) AS documents, (SELECT count(*) FROM kb_chunk) AS chunks"
         ).fetchone()
+        state = embedding_state(conn)
     cfg = embedcfg.current()
-    row.update(embedder=cfg.label, semantic=cfg.semantic, dimension=cfg.dim, reembedding=reembed_job.running())
+    row.update(embedder=cfg.label, semantic=cfg.semantic, dimension=cfg.dim, reembedding=reembed_job.running(),
+               needs_reembedding=state["needs_reembedding"], stored_dimension=state["stored_dimension"])
     return row
 
 
@@ -571,8 +576,9 @@ def test_account(account: str, body: TestBody):
 def embeddings_status():
     with connect() as conn:
         embedcfg.ensure_loaded(conn)
+        state = embedding_state(conn)
     cfg = embedcfg.current()
-    return {"job": reembed_job.status(),
+    return {"job": reembed_job.status(), **state,
             "active": {"account": "env" if cfg.account_id is None else cfg.account_id, "model": cfg.label,
                        "dimension": cfg.dim, "semantic": cfg.semantic}}
 
@@ -586,7 +592,8 @@ def activate_embeddings(body: ActivateBody):
         target = embedcfg.from_env() if body.account == "env" else accounts.embedding_config_for(conn, int(body.account))
         current = embedcfg.current()
         embed_texts(["connection test"], target)  # fail fast with a clear message before touching any data
-        same = (target.base_url, target.model, target.dim) == (current.base_url, current.model, current.dim)
+        same = ((target.base_url, target.model, target.dim) == (current.base_url, current.model, current.dim)
+                and not embedding_state(conn)["needs_reembedding"])   # a size mismatch always needs the re-embedding
         if same:
             embedcfg.store.put(conn, embedcfg.SETTING, "" if target.account_id is None else str(target.account_id))
             conn.commit()

@@ -158,7 +158,8 @@ async function renderEmbeddings() {
   // poll never has to rebuild the select above them (a choice the person is making would be lost).
   const facts = h("dl", { class: "facts" });
   const showFacts = (a, st) => fill(facts, h("dt", {}, "Active"), h("dd", {}, `${a.model} · ${a.dimension} dimensions · ${a.semantic ? "semantic" : "word matching only"}`),
-    h("dt", {}, "Passages"), h("dd", {}, String(st.chunks)));
+    h("dt", {}, "Passages"), h("dd", {}, String(st.chunks)),
+    ...(st.needs_reembedding ? [h("dt", {}, "Status"), h("dd", { class: "error" }, `Needs re-embedding: the index stores ${st.stored_dimension}-dimension vectors. Use the account below again to convert it.`)] : []));
   showFacts(act, stats);
   const refresh = async () => {
     try { const [st, sx] = await Promise.all([api("/api/embeddings/status"), api("/api/stats")]); showFacts(st.active, sx); } catch { /* keep the old facts */ }
