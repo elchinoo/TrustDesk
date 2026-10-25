@@ -18,17 +18,25 @@ register("data:text/javascript," + encodeURIComponent(loader));
 const contains = (root, el) => root === el || (root.children || []).some((c) => contains(c, el));
 
 class El {
-  constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.dataset = {}; this.value = ""; this.listeners = {}; this.classList = { toggle() {}, add() {}, remove() {} }; this.style = {}; this.textContent = ""; this.open = false; this.selectionStart = null; this.selectionEnd = null; }
-  append(...k) { this.children.push(...k); }
+  constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.dataset = {}; this.value = ""; this.listeners = {}; this.classes = new Set(); this.classList = { toggle: (c, on) => { if (on === undefined ? !this.classes.has(c) : on) this.classes.add(c); else this.classes.delete(c); }, add: (c) => this.classes.add(c), remove: (c) => this.classes.delete(c), contains: (c) => this.classes.has(c) }; this.style = {}; this.className = ""; this.disabled = false; Object.defineProperty(this, "parent", { value: null, writable: true, enumerable: false }); this.textContent = ""; this.open = false; this.selectionStart = null; this.selectionEnd = null; }
+  append(...k) { for (const x of k) if (x && x.nodeType === 1) x.parent = this; this.children.push(...k); }
   prepend(...k) { this.children.unshift(...k); }
   replaceChildren(...k) {
     const old = this.children;
     this.children = k;
+    for (const x of k) if (x && x.nodeType === 1) x.parent = this;
     const a = document.activeElement;
     if (a && old.some((c) => contains(c, a)) && !k.some((c) => contains(c, a))) document.activeElement = null;   // a removed element loses focus
   }
+  remove() {   // like a browser: a removed element leaves the page and loses the focus
+    if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
+    this.parent = null;
+    const a = document.activeElement;
+    if (a && contains(this, a)) document.activeElement = null;
+  }
   setAttribute(k, v) { this.attrs[k] = v; }
   addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }
+  fire(t, ev = {}) { const e = { target: this, preventDefault() {}, ...ev }; for (const f of this.listeners[t] || []) f(e); for (let n = this.parent; n; n = n.parent) for (const f of n.listeners[t] || []) f(e); }
   focus() { document.activeElement = this; }
   setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
   showModal() { this.open = true; }
@@ -45,11 +53,11 @@ export const findAll = (el, pred) => [...(pred(el) ? [el] : []), ...(el.children
 // Installs the globals and returns helpers. `routes(path, init)` answers every fetch with a JSON body.
 export async function installDom({ hash, routes, perms = ["*"] }) {
   const els = {};
-  globalThis.document = { activeElement: null, hidden: false, documentElement: { dataset: { csrf: "X-TrustDesk-CSRF" } }, getElementById: (id) => Object.values(els).map((r) => find(r, (e) => e.attrs?.id === id)).find(Boolean) || (els[id] ||= new El("#" + id)),   // like a page: a created element is found once it is attached
+  globalThis.document = { body: new El("body"), activeElement: null, hidden: false, documentElement: { dataset: { csrf: "X-TrustDesk-CSRF" } }, getElementById: (id) => Object.values(els).map((r) => find(r, (e) => e.attrs?.id === id)).find(Boolean) || (els[id] ||= new El("#" + id)),   // like a page: a created element is found once it is attached
     createElement: (t) => new El(t), createElementNS: (_, t) => new El(t), createTextNode: (d) => ({ nodeType: 3, data: d }), querySelectorAll: () => [] };
   globalThis.window = { dispatchEvent() {}, addEventListener() {} };
   globalThis.CustomEvent = class {};
-  globalThis.confirm = () => true;
+  for (const n of ["confirm", "alert", "prompt"]) globalThis[n] = () => { throw new Error(`native ${n}() called: use confirmDialog/promptDialog`); };   // a native dialog would freeze a real browser
   globalThis.location = { origin: "http://x", hash, search: "", pathname: "/" };
   globalThis.fetch = async (p, init) => {
     const body = await routes(p, init || {});
@@ -70,7 +78,10 @@ export async function installDom({ hash, routes, perms = ["*"] }) {
     for (const t of timers.filter((x) => x.live)) { if (t.kind === "timeout") t.live = false; await t.f(); }
     await settle();
   };
-  return { el: (id) => document.getElementById(id), timers, tick, settle, realSetTimeout, realSetInterval };
+  // The shared modal lives under <body>: these find it and its buttons.
+  const dialog = () => find(document.body, (e) => e.className === "confirm-overlay");
+  const button = (label) => find(dialog(), (e) => e.tag === "button" && e.children.some((c) => c.data === label));
+  return { dialog, button, el: (id) => document.getElementById(id), timers, tick, settle, realSetTimeout, realSetInterval };
 }
 
 export function fail(msg) { console.error("FAIL: " + msg); process.exit(1); }

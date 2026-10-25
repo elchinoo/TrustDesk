@@ -7,7 +7,7 @@ import { initReports } from "/static/reports.js";
 import { initRequests } from "/static/requests.js";
 import { initSearch } from "/static/search.js";
 import { initSettings } from "/static/settings.js";
-import { can, refreshSession, renderLogin, renderSetup, renderVaultBanner, state } from "/kit/session.js";
+import { bootSession, can, refreshSession, renderLogin, renderSetup, renderVaultBanner, state } from "/kit/session.js";
 import { $, h } from "/kit/ui.js";
 
 const TABS = ["requests", "employees", "reports", "documents", "search", "ask", "settings", "connect"];
@@ -19,24 +19,16 @@ try { sessionStorage.removeItem("trustdesk.key"); } catch { /* storage unavailab
 
 function hideAll() { for (const id of SECTIONS) $(id).hidden = true; }
 
-function showUnavailable(err) {
-  hideAll();
-  $("auth-card").replaceChildren(
-    h("img", { class: "hero-logo", src: "/static/logo.svg", alt: "", width: "72", height: "72" }),
-    h("h1", {}, "TrustDesk can't be reached"),
-    h("p", { class: "muted" }, err.message),
-    h("p", { class: "hint" }, "If this server runs on a platform that pauses idle apps, resume it first (for AgentPG: agentpg sandbox resume <sandbox-id>), then retry."),
-    h("button", { class: "primary", type: "button", onclick: () => boot() }, "Retry"));
-  $("auth-card").hidden = false;
-}
-
 async function boot(notice = "") {
   hideAll();
-  let s;
-  try { s = await refreshSession(); } catch (err) { showUnavailable(err); return; }
-  if (s.state === "setup_required") renderSetup(() => boot(), "TrustDesk");
-  else if (s.state === "logged_out") renderLogin(() => boot(), notice, "TrustDesk");
-  else showApp();
+  // The card shows "Loading…" (a single sign-on round trip can take seconds), or an error with a retry; onReady runs after
+  // a successful retry too, so the page never stays on the error.
+  $("auth-card").hidden = false;
+  await bootSession($("auth-card"), { onReady: (s) => {
+    if (s.state === "setup_required") renderSetup(() => boot(), "TrustDesk");
+    else if (s.state === "logged_out") renderLogin(() => boot(), notice, "TrustDesk");
+    else showApp();
+  } });
 }
 
 const NEEDS = { requests: "requests:read", employees: "requests:read", reports: "reports:read", documents: "kb:read", search: "kb:read", ask: "ask", settings: "settings:manage", connect: "mcp:use" };

@@ -1,5 +1,5 @@
 import { api, ApiError } from "/kit/api.js";
-import { $, fmtDate, h, toast } from "/kit/ui.js";
+import { $, confirmDialog, fmtDate, h, toast } from "/kit/ui.js";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const OK_EXT = /\.(md|markdown|txt|pdf)$/i;
@@ -61,7 +61,7 @@ async function view(id) {
 }
 
 async function remove(d) {
-  if (!confirm(`Delete "${d.title}" and its ${d.chunks} chunks? This cannot be undone.`)) return;
+  if (!(await confirmDialog(`Delete "${d.title}" and its ${d.chunks} chunks? This cannot be undone.`, { title: "Delete document", confirmLabel: "Delete", danger: true }))) return;
   try { await api("/api/documents/" + d.id, { method: "DELETE" }); toast("Deleted " + d.title); load(); } catch (err) { toast(err.message, true); }
 }
 
