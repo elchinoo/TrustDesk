@@ -85,10 +85,10 @@ Bodies larger than 64 KB are refused (`413`). Send an `Idempotency-Key` header (
 | `GET /requests/{ref}` | Adds `validation`: recommendation (`approve`, `reject`, `needs_info`, `manual`), compliance, summary, reasons, citations with quotes (and whether each quote was found word for word), the passages the model saw, automatic checks and warnings. |
 | `POST /requests/{ref}/decision` | `{ "action": "approve" \| "reject" \| "request_info", "note": "..." }`. A note is required to reject or ask for information. Deciding against the AI advice needs a note of 10+ characters and is recorded as an override. `409` if the request is already decided or still being validated. |
 | `POST /requests/{ref}/validate` | Run the pre-validation again (`202`). |
-| `POST /requests/validate-pending` | Validate every request still waiting for it (`202`). |
+| `POST /requests/validate-pending` | Validate every request still waiting for it, including those skipped because no account was configured (`202`). |
 | `GET /requests/counts` | Counts by status and how many open requests the AI flagged. |
 | `GET /reports`, `GET /reports/{name}?from=&to=&format=json\|csv` | Reports: `overview`, `requests`, `compliance`, `out_of_compliance`, `overrides`, `expenses`, `leave`, `aging`, `absences`. CSV neutralises cells that a spreadsheet would treat as formulas. |
-| `GET/PUT /validation/settings` | Which provider account validates (`{ "account": "env" \| "<id>" \| null }`). |
+| `GET/PUT /validation/settings` | Which provider account validates and how fast waiting requests are caught up. `PUT { "account": "env" \| "<id>" \| "none" \| null, "backlog_per_minute": 0-60 \| null }`: `none` switches validation off, `null` forgets the saved value (the environment account, else the only account with a chat model, is the default; `backlog_per_minute` falls back to `VALIDATE_BACKLOG_PER_MINUTE`). A field you leave out is unchanged. `GET` returns the saved `account`, the `effective` one, its `source` (`saved` or `default`) and `backlog` (`waiting`, `per_minute`, `default`, `max`). |
 | `POST /demo` | Load the fictional Acme policies, employees and requests (idempotent). |
 
 ## Errors

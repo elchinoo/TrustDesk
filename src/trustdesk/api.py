@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import sys
 import time
@@ -13,7 +14,18 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, accounts, api_v1, core, embedcfg, metrics, reembed_job, seedpack, vault
+from . import (
+    __version__,
+    accounts,
+    api_v1,
+    core,
+    embedcfg,
+    metrics,
+    reembed_job,
+    seedpack,
+    validator,
+    vault,
+)
 from . import ask as asker
 from .core import COOKIE, CSRF_HEADER, auth, fed, local
 from .db import connect, connect_vector
@@ -63,11 +75,23 @@ def _startup_tasks() -> None:
         pass
 
 
+async def _backlog_loop() -> None:
+    """Every minute, validate a bounded number of requests that were waiting for an AI account."""
+    while True:
+        await asyncio.sleep(validator.BACKLOG_INTERVAL)
+        with contextlib.suppress(Exception):  # a database that is asleep is simply tried again next minute
+            await asyncio.to_thread(validator.backlog_pass)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     _startup_tasks()
-    async with mcp_app.router.lifespan_context(mcp_app):
-        yield
+    backlog = asyncio.create_task(_backlog_loop())
+    try:
+        async with mcp_app.router.lifespan_context(mcp_app):
+            yield
+    finally:
+        backlog.cancel()
 
 
 # --- authentication ---------------------------------------------------------------------------------------
@@ -577,10 +601,12 @@ def embeddings_status():
     with connect() as conn:
         embedcfg.ensure_loaded(conn)
         state = embedding_state(conn)
+        saved = embedcfg.store.get(conn, embedcfg.SETTING)
     cfg = embedcfg.current()
     return {"job": reembed_job.status(), **state,
             "active": {"account": "env" if cfg.account_id is None else cfg.account_id, "model": cfg.label,
-                       "dimension": cfg.dim, "semantic": cfg.semantic}}
+                       "dimension": cfg.dim, "semantic": cfg.semantic,
+                       "default": not saved}}   # nothing saved: the environment account applies by default
 
 
 @app.post("/api/embeddings/activate", dependencies=[Depends(require("full")), Depends(idle)])

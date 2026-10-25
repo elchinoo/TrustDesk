@@ -117,6 +117,11 @@ You can also configure a single provider from the environment instead of the bro
 | `EMBEDDING_MODEL`, `EMBEDDING_DIM` | Embedding model and vector size (default `768`). |
 | `LLM_CHAT_MODEL` | Chat model, to use this account in Ask. |
 | `EMBEDDING_SEND_DIMENSIONS` | `false` if the provider rejects the `dimensions` field. |
+| `VALIDATE_BACKLOG_PER_MINUTE` | How many waiting requests the background pass validates per minute (default `10`, `0` = off, at most 60). Settings can override it at runtime. |
+
+**The environment account is the default.** With `LLM_BASE_URL` and `LLM_CHAT_MODEL` set, nothing has to be chosen in Settings: Request validation, Ask and search embeddings use it ("Using the environment account: default"). A choice saved in Settings always wins, including **None** (no AI validation); picking **Default** forgets the saved choice. The dropdown shows what is really saved, and Save confirms on the page. If a stored account has the same base URL and chat model as the environment one, Settings notes "Same endpoint as the environment account" (nothing is deleted for you).
+
+**Catching up.** Requests that arrived while no account was usable are marked "validation skipped". As soon as an account is available, a background pass (once a minute, `VALIDATE_BACKLOG_PER_MINUTE` requests at most, oldest first, recorded in the history like any validation) validates them. It does nothing while there is no account, or while a stored account's key is locked, so it never records a failure for a problem a person can fix. Settings shows how many requests are waiting, lets you change the rate, and keeps **Validate waiting requests** for doing it right now.
 
 From a terminal, `trustdesk reembed` re-embeds everything after you change these.
 

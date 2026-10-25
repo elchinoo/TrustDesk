@@ -33,31 +33,62 @@ async function renderAccounts() {
 function renderAll() { initSettings(); }
 
 // ---- request validation ---------------------------------------------------------------------------
-async function renderValidation() {
+const DEFAULT = "__default";   // the select's value for "nothing saved: use the default"
+let countPoll = null;
+
+// What the saved setting and the effective account mean, in words.
+function validationStatus(s) {
+  const name = (id) => s.accounts.find((a) => a.id === id)?.name || "the saved account";
+  if (s.account === "none") return "Validation is switched off (saved). Requests arrive without AI advice.";
+  if (s.effective == null) return "No chat model is available, so requests arrive without AI advice. Add an account with a chat model above.";
+  if (s.source === "default") return s.effective === "env" ? "Using the environment account: default. Every new request is checked by it against your policy documents." : `Using ${name(s.effective)}: default (the only account with a chat model).`;
+  return `Using ${name(s.effective)} (saved). Every new request is checked by this model against your policy documents before a person sees it.`;
+}
+
+async function renderValidation(savedMsg) {
   const box = $("settings-validation");
   let s;
   try { s = await api("/api/v1/validation/settings"); } catch (err) { box.replaceChildren(h("p", { class: "error" }, err.message)); return; }
-  const pick = h("select", { id: "val-account" }, h("option", { value: "" }, "Automatic (the only account with a chat model)"),
-    ...s.accounts.map((a) => h("option", { value: a.id }, `${a.name} · ${a.chat_model}`)));
-  pick.value = s.account || "";
-  const note = h("p", { class: "hint" }, s.effective
-    ? "Every new request is checked by this model against your policy documents before a person sees it."
-    : "No chat model is available, so requests arrive without AI advice. Add an account with a chat model above.");
+  const hasEnv = s.accounts.some((a) => a.id === "env");
+  const options = [h("option", { value: DEFAULT }, hasEnv ? "Default (environment account)" : "Default (the only account with a chat model)"),
+    h("option", { value: "none" }, "None (no AI validation)"),
+    ...s.accounts.map((a) => h("option", { value: a.id }, `${a.name} · ${a.chat_model}`))];
+  const saved = s.account || DEFAULT;
+  if (!options.some((o) => o.value === saved)) options.push(h("option", { value: saved }, "Saved account (no longer available)"));   // show the truth, not the first option
+  const pick = h("select", { id: "val-account" }, ...options);
+  pick.value = saved;
+  const b = s.backlog;
+  const rate = h("input", { id: "val-backlog", type: "number", min: "0", max: String(b.max), value: b.saved ? String(b.per_minute) : "", placeholder: String(b.default) });
+  const waiting = h("strong", { id: "val-waiting" }, String(b.waiting));
+  const result = h("p", { class: "hint", role: "status" }, savedMsg || "");
+  // Only the count is redrawn by the poll: the select and the number the person is typing are never rebuilt.
+  clearInterval(countPoll);
+  countPoll = setInterval(async () => {
+    try { const x = await api("/api/v1/validation/settings"); waiting.textContent = String(x.backlog.waiting); } catch { /* keep the old count */ }
+  }, 15000);
   fill(box,
     h("h2", {}, "Request validation"),
     h("p", { class: "muted" }, "Which account pre-validates employee requests. The request text and the retrieved policy passages are sent to that provider; employee names, e-mail addresses and numbers are not."),
-    field("Account", pick, undefined), note,
+    field("Account", pick, undefined), h("p", { class: "hint" }, validationStatus(s)),
+    h("p", { class: "muted" }, h("span", {}, "Requests waiting for validation: "), waiting),
+    field("Waiting requests validated per minute", rate, `Requests that arrived without an account are picked up automatically, oldest first, once one is available. 0 turns it off. Empty uses the server default (${b.default}). Maximum ${b.max}.`),
     h("div", { class: "btns" }, h("button", { class: "primary", type: "button", onclick: async (e) => {
       e.target.disabled = true;
-      try { await api("/api/v1/validation/settings", { method: "PUT", json: { account: pick.value || null } }); toast("Saved"); renderValidation(); } catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
+      try {
+        await api("/api/v1/validation/settings", { method: "PUT", json: { account: pick.value === DEFAULT ? null : pick.value, backlog_per_minute: rate.value === "" ? null : Number(rate.value) } });
+        toast("Saved");
+        renderValidation("Saved.");
+      } catch (err) { toast(err.message, true); result.className = "error"; result.textContent = err.message; } finally { e.target.disabled = false; }
     } }, "Save"),
     h("button", { class: "secondary", type: "button", onclick: async (e) => {
       e.target.disabled = true;
       try { const r = await api("/api/v1/requests/validate-pending", { method: "POST" }); toast(r.queued ? `Validating ${r.queued} waiting requests` : "No requests are waiting for validation"); } catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
-    } }, "Validate waiting requests")));
+    } }, "Validate waiting requests")), result);
 }
 
 function accountCard(a, data, reload, edit) {
+  const sameAsEnv = !a.read_only && data.env && a.chat_model && a.chat_model === data.env.chat_model
+    && a.base_url.replace(/\/+$/, "") === data.env.base_url.replace(/\/+$/, "");
   const result = h("p", { class: "test-result", role: "status" });
   const test = (target) => async (e) => {
     e.target.disabled = true;
@@ -80,6 +111,7 @@ function accountCard(a, data, reload, edit) {
       h("dt", {}, "API key"), h("dd", {}, a.has_key ? (a.api_key_last4 ? `stored, ends in ${a.api_key_last4}` : "set by the server") : "none"),
       h("dt", {}, "Chat model"), h("dd", {}, a.chat_model || "not set"),
       h("dt", {}, "Embedding model"), h("dd", {}, a.embedding_model ? `${a.embedding_model}${a.embedding_dim ? ` (${a.embedding_dim} dims)` : ""}` : "not set")),
+    sameAsEnv ? h("p", { class: "hint" }, "Same endpoint as the environment account.") : null,
     h("div", { class: "btns wrap" },
       a.chat_model ? h("button", { class: "secondary small", type: "button", onclick: test("chat") }, "Test chat") : null,
       a.embedding_model ? h("button", { class: "secondary small", type: "button", onclick: test("embeddings") }, "Test embeddings") : null,
@@ -180,6 +212,7 @@ async function renderEmbeddings() {
   box.replaceChildren(
     h("h2", {}, "Search embeddings"),
     h("p", { class: "muted" }, "Embeddings turn passages and questions into vectors for semantic search. The built-in demo embedder only matches words; a provider model understands meaning."),
+    ...(act.default && acc.env && act.account === "env" ? [h("p", { class: "hint" }, "Using the environment account: default.")] : []),
     facts,
     options.length ? h("div", { class: "field" }, h("label", { for: "emb-select" }, "Account to use"), select) : h("p", { class: "hint" }, "Add an account with an embedding model to switch."),
     h("div", { class: "btns" }, go), progress, msg);

@@ -5,6 +5,7 @@ The model only advises. It reads (1) system-computed facts, (2) the request text
 says is then checked before a person sees it: citations must point at real passages, quotes are matched word for
 word against the passage text, and a recommendation without a citable basis is downgraded to "needs_info".
 """
+import contextlib
 import json
 import re
 import time
@@ -14,12 +15,18 @@ from psycopg.types.json import Jsonb
 from . import accounts, facts, metrics, request_types, vault, workflow
 from . import ask as asker
 from . import settings_store as store
-from .db import connect_vector
+from .config import get_settings
+from .db import connect, connect_vector
 from .embeddings import EmbeddingError
 from .llm_http import LLMError
 from .search import hybrid_search
 
 SETTING = "validation_account"
+NONE = "none"                       # the stored choice that switches validation off on purpose
+BACKLOG_SETTING = "validate_backlog_per_minute"
+BACKLOG_MAX = 60                    # the most requests one pass (one minute) may validate, whatever is configured
+BACKLOG_INTERVAL = 60               # seconds between passes
+BACKLOG_MIN_AGE = 120               # seconds: a request this young is still being validated by its own task
 MAX_PASSAGES = 10
 PER_QUERY = 4
 MAX_PASSAGE_CHARS = 1500
@@ -53,7 +60,11 @@ class VerdictError(ValueError):
 
 # ---- which provider account validates ---------------------------------------------------------------
 def choose_account(conn) -> int | str | None:
+    """An explicitly saved choice always wins (including 'none'). Without one, the environment account is the
+    default when it has a chat model, else the only stored account that has one."""
     pointer = store.get(conn, SETTING)
+    if pointer == NONE:
+        return None
     if pointer:
         return "env" if pointer == "env" else int(pointer)
     env = accounts.env_account()
@@ -64,12 +75,56 @@ def choose_account(conn) -> int | str | None:
 
 
 def set_account(conn, ref: str | None) -> None:
+    """ref: an account id or 'env' (saved), 'none' (saved: validation off) or None (forget the choice: use the default)."""
     if ref is None:
         store.delete(conn, SETTING)
+    elif ref == NONE:
+        store.put(conn, SETTING, NONE)
     else:
         accounts.chat_config_for(conn, "env" if ref == "env" else int(ref))  # fails if it cannot chat
         store.put(conn, SETTING, ref)
     conn.commit()
+
+
+def backlog_rate(conn) -> int:
+    """Requests per minute the background pass may validate: the saved value, else the environment default."""
+    saved = store.get(conn, BACKLOG_SETTING)
+    try:
+        value = int(saved) if saved not in (None, "") else get_settings().validate_backlog_per_minute
+    except ValueError:
+        value = get_settings().validate_backlog_per_minute
+    return max(0, min(value, BACKLOG_MAX))
+
+
+def set_backlog_rate(conn, value: int | None) -> None:
+    """None forgets the saved value (the environment default applies again); 0 turns the background pass off."""
+    if value is None:
+        store.delete(conn, BACKLOG_SETTING)
+    else:
+        if not 0 <= value <= BACKLOG_MAX:
+            raise accounts.AccountError(f"the rate must be between 0 and {BACKLOG_MAX} requests per minute")
+        store.put(conn, BACKLOG_SETTING, str(value))
+    conn.commit()
+
+
+def backlog_pass() -> int:
+    """Validate requests that were waiting for an account, oldest first, at most `backlog_rate` of them. Does nothing
+    while there is no usable account (it would only record another 'skipped'), or while the stored account's key is
+    locked (it would turn every waiting request into a 'failed' one that is never retried)."""
+    with connect() as conn:
+        rate = backlog_rate(conn)
+        ref = choose_account(conn) if rate else None
+        if ref is None:
+            return 0
+        if ref != "env" and not vault.is_unlocked() and accounts._raw(conn, int(ref))["api_key_enc"]:
+            return 0
+        ids = workflow.pending_validation_ids(conn, limit=rate, older_than_seconds=BACKLOG_MIN_AGE)
+    done = 0
+    for i in ids:  # one at a time: be gentle with the provider's rate limits
+        with contextlib.suppress(Exception):  # each failure is recorded on its request; the pass must go on
+            validate(i)
+            done += 1
+    return done
 
 
 # ---- retrieval --------------------------------------------------------------------------------------

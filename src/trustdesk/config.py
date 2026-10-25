@@ -15,6 +15,14 @@ class Settings:
     embedding_dim: int
     allow_anonymous: bool
     send_dimensions: bool
+    validate_backlog_per_minute: int
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
 
 
 def _api_key() -> str:
@@ -38,4 +46,7 @@ def get_settings() -> Settings:
         allow_anonymous=os.environ.get("TRUSTDESK_ALLOW_ANONYMOUS", "").lower() in {"1", "true", "yes"},
         # Some providers reject an unknown `dimensions` field; set EMBEDDING_SEND_DIMENSIONS=false for them.
         send_dimensions=os.environ.get("EMBEDDING_SEND_DIMENSIONS", "true").lower() not in {"0", "false", "no"},
+        # Requests waiting for validation (no account was configured when they arrived) are picked up in the
+        # background at this rate. 0 turns it off; Settings can override it at runtime.
+        validate_backlog_per_minute=_int_env("VALIDATE_BACKLOG_PER_MINUTE", 10),
     )

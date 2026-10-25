@@ -22,6 +22,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import accounts, demo, people, reports, request_types, seedpack, validator, workflow
+from .config import get_settings
 from .db import connect, connect_vector
 
 PUBLIC_EVENTS = {"submitted", "resubmitted", "withdrawn", "approved", "rejected", "info_requested"}
@@ -90,7 +91,8 @@ class DecisionBody(_Body):
 
 
 class ValidationSettingBody(_Body):
-    account: str | None = Field(None, pattern=r"^(env|\d{1,12})$")
+    account: str | None = Field(None, pattern=r"^(env|none|\d{1,12})$")   # null: forget the choice and use the default
+    backlog_per_minute: int | None = Field(None, ge=0, le=validator.BACKLOG_MAX)   # null: use the environment default
 
 
 def _actor(p: Principal) -> str:
@@ -276,19 +278,28 @@ def build_router(require, idle) -> APIRouter:
     @r.get("/validation/settings", dependencies=[count_ok])
     def validation_settings():
         with connect() as conn:
-            chosen = validator.store.get(conn, validator.SETTING)
+            chosen = validator.store.get(conn, validator.SETTING) or None
             effective = validator.choose_account(conn)
             usable = [{"id": str(a["id"]), "name": a["name"], "chat_model": a["chat_model"]}
                       for a in accounts.list_accounts(conn) if a["chat_model"]]
+            backlog = {"waiting": workflow.waiting_validation_count(conn), "per_minute": validator.backlog_rate(conn),
+                       "saved": validator.store.get(conn, validator.BACKLOG_SETTING) is not None}
         env = accounts.env_account()
         if env and env["chat_model"]:
             usable.insert(0, {"id": "env", "name": env["name"], "chat_model": env["chat_model"]})
-        return {"account": chosen, "effective": None if effective is None else str(effective), "accounts": usable}
+        backlog.update(default=get_settings().validate_backlog_per_minute, max=validator.BACKLOG_MAX)
+        # account: what is saved (null = nothing saved, so the default applies). effective: what runs.
+        return {"account": chosen, "effective": None if effective is None else str(effective),
+                "source": "saved" if chosen else ("default" if effective is not None else None),
+                "accounts": usable, "backlog": backlog}
 
     @r.put("/validation/settings", dependencies=[admin])
     def set_validation_settings(body: ValidationSettingBody):
         with _errors(), connect() as conn:
-            validator.set_account(conn, body.account)
+            if "account" in body.model_fields_set:
+                validator.set_account(conn, body.account)
+            if "backlog_per_minute" in body.model_fields_set:
+                validator.set_backlog_rate(conn, body.backlog_per_minute)
         return validation_settings()
 
     @r.post("/demo", status_code=201, dependencies=[admin, Depends(idle)])

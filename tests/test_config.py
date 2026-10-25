@@ -41,3 +41,12 @@ def test_llm_key_from_file(monkeypatch, tmp_path):
     assert get_settings().llm_api_key == "file-llm-key"  # pragma: allowlist secret
     monkeypatch.setenv("LLM_API_KEY", "env-llm-key")
     assert get_settings().llm_api_key == "env-llm-key"  # pragma: allowlist secret
+
+
+def test_backlog_rate_default_and_bad_value(monkeypatch):
+    monkeypatch.delenv("VALIDATE_BACKLOG_PER_MINUTE", raising=False)
+    assert get_settings().validate_backlog_per_minute == 10
+    monkeypatch.setenv("VALIDATE_BACKLOG_PER_MINUTE", "0")
+    assert get_settings().validate_backlog_per_minute == 0
+    monkeypatch.setenv("VALIDATE_BACKLOG_PER_MINUTE", "lots")
+    assert get_settings().validate_backlog_per_minute == 10

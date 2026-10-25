@@ -431,8 +431,94 @@ def test_csv_report_neutralises_formula_names(client, model, seeded):
 
 def test_validation_settings(client):
     s = client.get("/api/v1/validation/settings", headers=ADMIN).json()
-    assert s == {"account": None, "effective": None, "accounts": []}
+    assert {k: s[k] for k in ("account", "effective", "source", "accounts")} == {
+        "account": None, "effective": None, "source": None, "accounts": []}
     assert client.put("/api/v1/validation/settings", headers=ADMIN, json={"account": "999"}).status_code == 422
     assert client.put("/api/v1/validation/settings", headers=ADMIN, json={"account": "env"}).status_code == 422
     assert client.put("/api/v1/validation/settings", headers=ADMIN, json={"account": "x"}).status_code == 422
     assert client.put("/api/v1/validation/settings", headers=ADMIN, json={"account": None}).status_code == 200
+
+
+# ---- the environment account is the default; requests that waited for an account are picked up ----------
+def _env_account(monkeypatch):
+    """The fleet's LLM_* environment account. Only the account listing is faked: the embedder keeps its offline default."""
+    monkeypatch.setattr(accounts, "env_account", lambda: {
+        "id": "env", "name": "Environment (server settings)", "provider": "env", "base_url": "https://llm.invalid/v1",
+        "has_key": True, "api_key_last4": None, "chat_model": "chat-default", "embedding_model": None,
+        "embedding_dim": None, "read_only": True})
+
+
+def test_environment_account_is_the_default_and_an_explicit_choice_wins(client, monkeypatch):
+    with connect() as c:
+        assert validator.choose_account(c) is None                      # nothing configured
+        _env_account(monkeypatch)
+        assert validator.choose_account(c) == "env"                     # default: nothing saved
+        other = c.execute("INSERT INTO llm_account (name, provider, base_url, chat_model) "
+                          "VALUES ('mine','custom','https://other.invalid/v1','m') RETURNING id").fetchone()["id"]
+        validator.set_account(c, str(other))
+        assert validator.choose_account(c) == other                     # a saved choice beats the default
+        validator.set_account(c, "none")
+        assert validator.choose_account(c) is None                      # 'none' is a choice too, and is respected
+        validator.set_account(c, None)
+        assert validator.choose_account(c) == "env"                     # forgetting it restores the default
+
+
+def test_validation_settings_api_reports_the_true_saved_state(client, monkeypatch):
+    _env_account(monkeypatch)
+    got = client.get("/api/v1/validation/settings", headers=ADMIN).json()
+    assert got["account"] is None and got["effective"] == "env" and got["source"] == "default"
+    assert got["accounts"][0]["id"] == "env" and got["backlog"]["per_minute"] == 10 and got["backlog"]["waiting"] == 0
+    put = client.put("/api/v1/validation/settings", headers=ADMIN, json={"account": "none", "backlog_per_minute": 4})
+    assert put.status_code == 200
+    got = put.json()
+    assert got["account"] == "none" and got["effective"] is None and got["source"] == "saved"
+    assert got["backlog"]["per_minute"] == 4 and got["backlog"]["saved"] is True
+    # leaving a field out leaves it alone; null forgets it
+    got = client.put("/api/v1/validation/settings", headers=ADMIN, json={"account": None}).json()
+    assert got["account"] is None and got["effective"] == "env" and got["backlog"]["per_minute"] == 4
+    got = client.put("/api/v1/validation/settings", headers=ADMIN, json={"backlog_per_minute": None}).json()
+    assert got["backlog"]["per_minute"] == 10 and got["backlog"]["saved"] is False
+    assert client.put("/api/v1/validation/settings", headers=ADMIN, json={"backlog_per_minute": 61}).status_code == 422
+    assert client.put("/api/v1/validation/settings", headers=ADMIN, json={"account": "nope"}).status_code == 422
+    monkeypatch.setenv("VALIDATE_BACKLOG_PER_MINUTE", "3")
+    assert client.get("/api/v1/validation/settings", headers=ADMIN).json()["backlog"]["per_minute"] == 3
+
+
+def test_backlog_validates_skipped_requests_oldest_first_within_the_rate(client, monkeypatch, seeded):
+    employee(client)
+    refs = [vacation(client, start_date=_d(60 + 7 * i), end_date=_d(61 + 7 * i)).json()["ref"] for i in range(3)]
+    for ref in refs:
+        assert client.get(f"/api/v1/requests/{ref}", headers=ADMIN).json()["validation_state"] == "skipped"
+    assert client.get("/api/v1/validation/settings", headers=ADMIN).json()["backlog"]["waiting"] == 3
+    monkeypatch.setattr(validator, "BACKLOG_MIN_AGE", 0)
+    assert validator.backlog_pass() == 0                                # still no account: nothing is recorded again
+    assert [e["action"] for e in client.get(f"/api/v1/requests/{refs[0]}", headers=ADMIN).json()["events"]] == [
+        "submitted", "validation_skipped"]
+
+    fake = FakeModel()
+    cfg = accounts.ChatConfig(base_url="https://llm.invalid/v1", model="fake-1", trusted=True, label="Fake")
+    _env_account(monkeypatch)
+    monkeypatch.setattr(accounts, "chat_config_for", lambda conn, ref: cfg)
+    monkeypatch.setattr(asker, "chat", fake)
+    client.put("/api/v1/validation/settings", headers=ADMIN, json={"backlog_per_minute": 0})
+    assert validator.backlog_pass() == 0 and fake.calls == 0            # 0 switches the pass off
+    client.put("/api/v1/validation/settings", headers=ADMIN, json={"backlog_per_minute": 2})
+    assert validator.backlog_pass() == 2 and fake.calls == 2            # capped by the rate, oldest first
+    states = [client.get(f"/api/v1/requests/{r}", headers=ADMIN).json() for r in refs]
+    assert [s["validation_state"] for s in states] == ["done", "done", "skipped"]
+    assert [e["action"] for e in states[0]["events"]] == ["submitted", "validation_skipped", "validated"]
+    assert client.get("/api/v1/validation/settings", headers=ADMIN).json()["backlog"]["waiting"] == 1
+    assert validator.backlog_pass() == 1 and validator.backlog_pass() == 0
+    assert client.get("/api/v1/validation/settings", headers=ADMIN).json()["backlog"]["waiting"] == 0
+
+
+def test_backlog_leaves_a_request_that_was_just_submitted_alone(client, monkeypatch, seeded):
+    employee(client)
+    ref = vacation(client).json()["ref"]                                # skipped: no account yet
+    _env_account(monkeypatch)
+    monkeypatch.setattr(accounts, "chat_config_for", lambda conn, r: accounts.ChatConfig(
+        base_url="https://llm.invalid/v1", model="fake-1", trusted=True, label="Fake"))
+    monkeypatch.setattr(asker, "chat", FakeModel())
+    assert validator.backlog_pass() == 0                                # younger than BACKLOG_MIN_AGE
+    assert client.post("/api/v1/requests/validate-pending", headers=ADMIN).json() == {"queued": 1}   # the button has no such delay
+    assert client.get(f"/api/v1/requests/{ref}", headers=ADMIN).json()["validation_state"] == "done"

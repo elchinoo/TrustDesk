@@ -8,7 +8,7 @@ const acct = (id, model) => ({ id, name: "Account " + id, provider: "custom", ba
 const dom = await installDom({ hash: "#settings", routes: async (p) => {
   if (p === "/api/accounts") return { vault: { initialized: true, unlocked: true }, accounts: [acct(1, "e1"), acct(2, "e2")], env: null, active_embedding: 1 };
   if (p === "/api/providers") return [];
-  if (p.includes("/validation/settings")) return { accounts: [], account: null, effective: null };
+  if (p.includes("/validation/settings")) return { accounts: [], account: null, effective: null, backlog: { waiting: 0, per_minute: 10, saved: false, default: 10, max: 60 } };
   if (p === "/api/embeddings/status") return { active: { account: 1, model: "e1", dimension: 8, semantic: true }, job };
   if (p === "/api/stats") return { chunks: 10 };
   if (p === "/api/tokens") return [];

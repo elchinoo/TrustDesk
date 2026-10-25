@@ -278,9 +278,18 @@ def finish_validation(conn, request_id: int, state: str) -> None:
     conn.commit()
 
 
-def pending_validation_ids(conn, limit: int = 50) -> list[int]:
-    return [r["id"] for r in conn.execute(
-        "SELECT id FROM request WHERE status='submitted' AND (validation_state='pending' OR (validation_state='running' "
-        "AND validation_started_at < now() - %s * interval '1 minute')) ORDER BY id LIMIT %s",
-        (STALE_RUNNING_MINUTES, limit)).fetchall()]
+_WAITING = ("((status='submitted' AND (validation_state='pending' OR (validation_state='running' AND "
+            "validation_started_at < now() - %s * interval '1 minute'))) OR "
+            "(status IN ('submitted','pending_review') AND validation_state='skipped'))")
 
+
+def pending_validation_ids(conn, limit: int = 50, older_than_seconds: int = 0) -> list[int]:
+    """Requests that still lack an AI verdict (never started, skipped for lack of an account, or a stale claim),
+    oldest first. `older_than_seconds` leaves a request that was only just submitted to its own background task."""
+    return [r["id"] for r in conn.execute(
+        f"SELECT id FROM request WHERE {_WAITING} AND submitted_at < now() - %s * interval '1 second' "
+        "ORDER BY submitted_at, id LIMIT %s", (STALE_RUNNING_MINUTES, older_than_seconds, limit)).fetchall()]
+
+
+def waiting_validation_count(conn) -> int:
+    return conn.execute(f"SELECT count(*) AS n FROM request WHERE {_WAITING}", (STALE_RUNNING_MINUTES,)).fetchone()["n"]
