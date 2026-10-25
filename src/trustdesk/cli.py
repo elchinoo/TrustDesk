@@ -99,26 +99,19 @@ def _start() -> int:
               "  agentpg extensions create <instance-id> pg_trgm", file=sys.stderr)
         return 1
     print("migrations applied:", ", ".join(applied) if applied else "none (up to date)")
-    from . import embedcfg
-    from .migrate import embedding_state, reconcile_on_startup
+    from . import embedcfg, seedpack, vault
+    from .migrate import reconcile_on_startup
 
     reconcile_on_startup(progress=lambda m: print(m, file=sys.stderr, flush=True))   # never raises, never exits
     with connect() as conn:
         embedcfg.ensure_loaded(conn)
-        fits = not embedding_state(conn)["needs_reembedding"]
+    try:    # seeding embeds through the configured account, whose key is in the vault: open it first, as the app does
+        with connect(retries=1) as conn:
+            vault.auto_unlock(conn)
+    except Exception as exc:  # noqa: BLE001 - the app tries again at startup, and a locked vault only defers the seed
+        print(f"WARNING: could not unlock the vault before seeding: {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
     if os.environ.get("AUTO_SEED", "").lower() in {"1", "true", "yes"}:
-        with connect() as conn:
-            empty = conn.execute("SELECT NOT EXISTS (SELECT 1 FROM kb_document) AS e").fetchone()["e"]
-        if empty and not fits:
-            print("WARNING: AUTO_SEED skipped: the index needs re-embedding first", file=sys.stderr)
-        elif empty:
-            from .seedpack import load
-
-            try:
-                for r in load():
-                    print(f"seed {r['source']}: {r['status']}")
-            except Exception as exc:  # noqa: BLE001 - e.g. provider down: the app still comes up, the seed is retried next start
-                print(f"WARNING: AUTO_SEED skipped: {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
+        seedpack.auto_seed(progress=lambda m: print(m, file=sys.stderr if m.startswith("WARNING") else sys.stdout, flush=True))
     _serve()
     return 0
 

@@ -16,6 +16,7 @@ class Settings:
     allow_anonymous: bool
     send_dimensions: bool
     validate_backlog_per_minute: int
+    validate_max_attempts: int
 
 
 def _int_env(name: str, default: int) -> int:
@@ -49,4 +50,7 @@ def get_settings() -> Settings:
         # Requests waiting for validation (no account was configured when they arrived) are picked up in the
         # background at this rate. 0 turns it off; Settings can override it at runtime.
         validate_backlog_per_minute=_int_env("VALIDATE_BACKLOG_PER_MINUTE", 10),
+        # A validation that ended in `failed` is retried in the background (after 5, 15, then 60 minutes) up to this many
+        # attempts in total. 0 never retries; Settings can override it at runtime.
+        validate_max_attempts=_int_env("VALIDATE_MAX_ATTEMPTS", 3),
     )

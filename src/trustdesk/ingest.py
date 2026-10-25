@@ -34,7 +34,7 @@ def parse_bytes(name: str, data: bytes) -> str:
 
 
 def ingest_text(
-    *, title: str, source: str, text: str, org_id: str = "default", doc_type: str = "policy", conn=None
+    *, title: str, source: str, text: str, org_id: str = "default", doc_type: str = "policy", conn=None, cfg=None
 ) -> dict:
     sha = hashlib.sha256(text.encode()).hexdigest()
     own = conn is None
@@ -56,7 +56,7 @@ def ingest_text(
         if not chunks:
             return {"doc_id": None, "chunks": 0, "status": "empty"}
         embedcfg.ensure_loaded(conn)
-        cfg = embedcfg.current()
+        cfg = cfg or embedcfg.current()
         ensure_fits(conn, cfg)  # NeedsReembedding (HTTP 503) instead of a database error on a vector of the wrong size
         vectors = embed([f"{c.heading}\n{c.body}" for c in chunks], cfg)
         doc = conn.execute(
@@ -81,7 +81,7 @@ def ingest_text(
             conn.close()
 
 
-def ingest_file(path: Path, org_id: str = "default", doc_type: str = "policy", conn=None) -> dict:
+def ingest_file(path: Path, org_id: str = "default", doc_type: str = "policy", conn=None, cfg=None) -> dict:
     text = parse_bytes(path.name, path.read_bytes())
     return ingest_text(title=path.stem.replace("-", " ").title(), source=path.name, text=text,
-                       org_id=org_id, doc_type=doc_type, conn=conn)
+                       org_id=org_id, doc_type=doc_type, conn=conn, cfg=cfg)

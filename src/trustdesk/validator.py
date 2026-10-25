@@ -24,6 +24,9 @@ from .search import hybrid_search
 SETTING = "validation_account"
 NONE = "none"                       # the stored choice that switches validation off on purpose
 BACKLOG_SETTING = "validate_backlog_per_minute"
+ATTEMPTS_SETTING = "validate_max_attempts"
+ATTEMPTS_MAX = 10                   # the most automatic attempts that can be configured
+PERMANENT_HTTP = (400, 413, 422)    # the provider refused this very request: another try would get the same answer
 BACKLOG_MAX = 60                    # the most requests one pass (one minute) may validate, whatever is configured
 BACKLOG_INTERVAL = 60               # seconds between passes
 BACKLOG_MIN_AGE = 120               # seconds: a request this young is still being validated by its own task
@@ -107,10 +110,33 @@ def set_backlog_rate(conn, value: int | None) -> None:
     conn.commit()
 
 
+def max_attempts(conn) -> int:
+    """How many times in all a failed validation is attempted automatically: the saved value, else the environment default
+    (3). 0 never retries."""
+    saved = store.get(conn, ATTEMPTS_SETTING)
+    try:
+        value = int(saved) if saved not in (None, "") else get_settings().validate_max_attempts
+    except ValueError:
+        value = get_settings().validate_max_attempts
+    return max(0, min(value, ATTEMPTS_MAX))
+
+
+def set_max_attempts(conn, value: int | None) -> None:
+    """None forgets the saved value (the environment default applies again); 0 turns automatic retry off."""
+    if value is None:
+        store.delete(conn, ATTEMPTS_SETTING)
+    else:
+        if not 0 <= value <= ATTEMPTS_MAX:
+            raise accounts.AccountError(f"the number of attempts must be between 0 and {ATTEMPTS_MAX}")
+        store.put(conn, ATTEMPTS_SETTING, str(value))
+    conn.commit()
+
+
 def backlog_pass() -> int:
-    """Validate requests that were waiting for an account, oldest first, at most `backlog_rate` of them. Does nothing
-    while there is no usable account (it would only record another 'skipped'), or while the stored account's key is
-    locked (it would turn every waiting request into a 'failed' one that is never retried)."""
+    """Validate requests that were waiting for an account, oldest first, at most `backlog_rate` of them, and retry the ones
+    whose validation failed once their backoff (5, 15, 60 minutes) has passed and they are under `max_attempts`. Does
+    nothing while there is no usable account (it would only record another 'skipped'), or while the stored account's key is
+    locked (it would turn every waiting request into another 'failed' one)."""
     with connect() as conn:
         rate = backlog_rate(conn)
         ref = choose_account(conn) if rate else None
@@ -118,7 +144,8 @@ def backlog_pass() -> int:
             return 0
         if ref != "env" and not vault.is_unlocked() and accounts._raw(conn, int(ref))["api_key_enc"]:
             return 0
-        ids = workflow.pending_validation_ids(conn, limit=rate, older_than_seconds=BACKLOG_MIN_AGE)
+        ids = workflow.pending_validation_ids(conn, limit=rate, older_than_seconds=BACKLOG_MIN_AGE, failed="due",
+                                              max_attempts=max_attempts(conn))
     done = 0
     for i in ids:  # one at a time: be gentle with the provider's rate limits
         with contextlib.suppress(Exception):  # each failure is recorded on its request; the pass must go on
@@ -274,6 +301,17 @@ def _store(conn, request_id: int, *, state: str, verdict: dict | None = None, ch
          error, int((time.monotonic() - started) * 1000)))
 
 
+def _finish(conn, request_id: int, state: str, error: str | None, rec: str, retryable: bool) -> None:
+    """Close one attempt: count it, and record it in the request history (a failure says whether another try is coming)."""
+    attempts = workflow.finish_validation(conn, request_id, "done" if state == "ok" else state, retryable=retryable)
+    data: dict = {"recommendation": rec}
+    if state == "failed":
+        cap = max_attempts(conn)
+        data.update(attempt=attempts, will_retry=retryable and attempts < cap)
+    workflow.event(conn, request_id, "system", "validated" if state == "ok" else f"validation_{state}", error, data)
+    conn.commit()
+
+
 def validate(request_id: int) -> str:
     """Run one validation attempt and return its state ('ok', 'failed', 'skipped', or 'busy' if already running).
     Never raises for provider or data problems: those are recorded on the request so a person can see them."""
@@ -286,6 +324,7 @@ def validate(request_id: int) -> str:
         fact_map, checks = facts.compute(conn, request_id)
         conn.commit()
         state, passages, cfg, verdict, usage, error = "failed", [], None, None, None, None
+        retryable = True
         try:
             ref = choose_account(conn)
             if ref is None:
@@ -311,22 +350,20 @@ def validate(request_id: int) -> str:
             error = "Provider keys are locked. Sign in to TrustDesk and unlock them, then run validation again."
         except (LLMError, EmbeddingError, accounts.AccountError, VerdictError) as exc:
             error = f"Validation could not finish: {exc}"
+            retryable = getattr(exc, "status", None) not in PERMANENT_HTTP
         except Exception:  # noqa: BLE001 - recorded without internals; the traceback goes to the server log
             error = "Validation failed unexpectedly (see the server log)."
             conn.rollback()
             _store(conn, request_id, state="failed", checks=checks, passages=passages, cfg=cfg, error=error,
                    started=started)
-            workflow.event(conn, request_id, "system", "validation_failed", error)
-            workflow.finish_validation(conn, request_id, "failed")
+            _finish(conn, request_id, "failed", error, "manual", retryable)
             metrics.VALIDATIONS.labels("failed", "manual").inc()
             raise
         conn.rollback()
         _store(conn, request_id, state=state, verdict=verdict, checks=checks, passages=passages, cfg=cfg,
                usage=usage, error=error, started=started)
         rec = verdict["recommendation"] if verdict else "manual"
-        workflow.event(conn, request_id, "system", "validated" if state == "ok" else f"validation_{state}",
-                       error, {"recommendation": rec})
-        workflow.finish_validation(conn, request_id, "done" if state == "ok" else state)
+        _finish(conn, request_id, state, error, rec, retryable)
         metrics.VALIDATIONS.labels(state, rec).inc()
         metrics.VALIDATION_SECONDS.observe(time.monotonic() - started)
         return state

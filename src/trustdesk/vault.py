@@ -15,3 +15,15 @@ change_password = _v.change_password
 reset = _v.reset
 encrypt = _v.encrypt
 decrypt = _v.decrypt
+
+
+def auto_unlock(conn) -> bool:
+    """Open the vault from the platform secret (TRUSTDESK_ENCRYPTION_KEY), creating it first on a single-sign-on-only
+    deployment that has no admin password to wrap the key with. The one place both the container entrypoint (before it
+    seeds) and the app (at startup) do this, so they cannot drift. Returns whether the vault is now unlocked."""
+    from .core import fed
+
+    if fed.enabled and not is_initialized(conn):
+        _v.initialize_with_platform_secret(conn)
+        conn.commit()
+    return try_unlock_with_platform_secret(conn) or is_unlocked()

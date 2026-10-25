@@ -40,7 +40,9 @@ def chat(cfg: ChatConfig, messages: list[dict], max_tokens: int = 700) -> dict:
     body = {"model": cfg.model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.2}
     resp = post_json(cfg.base_url, "/chat/completions", key, body, trusted=cfg.trusted)
     if resp.status_code >= 400:
-        raise LLMError(f"chat endpoint returned HTTP {resp.status_code}: {error_detail(resp, key)}")
+        err = LLMError(f"chat endpoint returned HTTP {resp.status_code}: {error_detail(resp, key)}")
+        err.status = resp.status_code   # lets the validator tell a permanent client error from an outage
+        raise err
     try:
         data = resp.json()
     except ValueError as exc:

@@ -93,6 +93,7 @@ class DecisionBody(_Body):
 class ValidationSettingBody(_Body):
     account: str | None = Field(None, pattern=r"^(env|none|\d{1,12})$")   # null: forget the choice and use the default
     backlog_per_minute: int | None = Field(None, ge=0, le=validator.BACKLOG_MAX)   # null: use the environment default
+    max_attempts: int | None = Field(None, ge=0, le=validator.ATTEMPTS_MAX)   # null: use the environment default; 0: never retry
 
 
 def _actor(p: Principal) -> str:
@@ -207,7 +208,8 @@ def build_router(require, idle) -> APIRouter:
     @r.post("/requests/validate-pending", status_code=202, dependencies=[decide_ok, Depends(idle)])
     def validate_pending(background: BackgroundTasks):
         with connect() as conn:
-            ids = workflow.pending_validation_ids(conn)
+            ids = workflow.pending_validation_ids(conn, failed="all")   # the person's explicit action: failed ones too
+            workflow.reset_attempts(conn, ids)                          # ... and it starts their attempt count over
         background.add_task(_validate_many, ids)
         return {"queued": len(ids)}
 
@@ -247,6 +249,7 @@ def build_router(require, idle) -> APIRouter:
             req = workflow.get(conn, rid)
             if req["status"] not in workflow.OPEN:
                 raise workflow.Conflict(f"this request is already {req['status']}")
+            workflow.reset_attempts(conn, [rid])
         background.add_task(validator.validate, rid)
         return {"queued": True}
 
@@ -284,10 +287,15 @@ def build_router(require, idle) -> APIRouter:
                       for a in accounts.list_accounts(conn) if a["chat_model"]]
             backlog = {"waiting": workflow.waiting_validation_count(conn), "per_minute": validator.backlog_rate(conn),
                        "saved": validator.store.get(conn, validator.BACKLOG_SETTING) is not None}
+            attempts = validator.max_attempts(conn)
+            backlog.update(workflow.failed_validation_counts(conn, attempts), max_attempts=attempts,
+                           max_attempts_saved=validator.store.get(conn, validator.ATTEMPTS_SETTING) is not None)
         env = accounts.env_account()
         if env and env["chat_model"]:
             usable.insert(0, {"id": "env", "name": env["name"], "chat_model": env["chat_model"]})
-        backlog.update(default=get_settings().validate_backlog_per_minute, max=validator.BACKLOG_MAX)
+        backlog.update(default=get_settings().validate_backlog_per_minute, max=validator.BACKLOG_MAX,
+                       max_attempts_default=get_settings().validate_max_attempts, max_attempts_max=validator.ATTEMPTS_MAX,
+                       backoff_minutes=list(workflow.RETRY_BACKOFF_MINUTES))
         # account: what is saved (null = nothing saved, so the default applies). effective: what runs.
         return {"account": chosen, "effective": None if effective is None else str(effective),
                 "source": "saved" if chosen else ("default" if effective is not None else None),
@@ -300,6 +308,8 @@ def build_router(require, idle) -> APIRouter:
                 validator.set_account(conn, body.account)
             if "backlog_per_minute" in body.model_fields_set:
                 validator.set_backlog_rate(conn, body.backlog_per_minute)
+            if "max_attempts" in body.model_fields_set:
+                validator.set_max_attempts(conn, body.max_attempts)
         return validation_settings()
 
     @r.post("/demo", status_code=201, dependencies=[admin, Depends(idle)])

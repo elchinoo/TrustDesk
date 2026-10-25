@@ -65,10 +65,7 @@ def _startup_tasks() -> None:
     try:
         with connect(retries=1) as conn:
             _auto_unlock_tried = True
-            if fed.enabled and not vault.is_initialized(conn):
-                core.vault.initialize_with_platform_secret(conn)   # single sign-on only: no admin password to wrap the key with
-                conn.commit()
-            vault.try_unlock_with_platform_secret(conn)
+            vault.auto_unlock(conn)
             if local.needs_setup(conn) and not fed.enabled:
                 _announce_setup_code()
     except Exception:  # noqa: BLE001 - database may be asleep; it is retried on the first request
@@ -83,15 +80,27 @@ async def _backlog_loop() -> None:
             await asyncio.to_thread(validator.backlog_pass)
 
 
+async def _seed_retry_loop() -> None:
+    """When `trustdesk start` skipped AUTO_SEED (vault locked, provider down, ...), try again now that the app is serving and
+    the vault has been unlocked, instead of waiting for the next restart."""
+    await asyncio.sleep(seedpack.RETRY_DELAY)
+    while seedpack.is_deferred():
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(seedpack.run_deferred, lambda m: print(m, file=sys.stderr, flush=True))
+        await asyncio.sleep(seedpack.RETRY_INTERVAL)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     _startup_tasks()
     backlog = asyncio.create_task(_backlog_loop())
+    seed_retry = asyncio.create_task(_seed_retry_loop())
     try:
         async with mcp_app.router.lifespan_context(mcp_app):
             yield
     finally:
         backlog.cancel()
+        seed_retry.cancel()
 
 
 # --- authentication ---------------------------------------------------------------------------------------

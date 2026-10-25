@@ -59,30 +59,38 @@ async function renderValidation(savedMsg) {
   pick.value = saved;
   const b = s.backlog;
   const rate = h("input", { id: "val-backlog", type: "number", min: "0", max: String(b.max), value: b.saved ? String(b.per_minute) : "", placeholder: String(b.default) });
+  const attempts = h("input", { id: "val-attempts", type: "number", min: "0", max: String(b.max_attempts_max), value: b.max_attempts_saved ? String(b.max_attempts) : "", placeholder: String(b.max_attempts_default) });
   const waiting = h("strong", { id: "val-waiting" }, String(b.waiting));
+  const retrying = h("strong", { id: "val-retrying" }, String(b.retrying));
+  const gaveUp = h("strong", { id: "val-gaveup" }, String(b.gave_up));
   const result = h("p", { class: "hint", role: "status" }, savedMsg || "");
-  // Only the count is redrawn by the poll: the select and the number the person is typing are never rebuilt.
+  // Only the counts are redrawn by the poll: the select and the numbers the person is typing are never rebuilt.
   clearInterval(countPoll);
   countPoll = setInterval(async () => {
-    try { const x = await api("/api/v1/validation/settings"); waiting.textContent = String(x.backlog.waiting); } catch { /* keep the old count */ }
+    try {
+      const x = (await api("/api/v1/validation/settings")).backlog;
+      waiting.textContent = String(x.waiting); retrying.textContent = String(x.retrying); gaveUp.textContent = String(x.gave_up);
+    } catch { /* keep the old counts */ }
   }, 15000);
   fill(box,
     h("h2", {}, "Request validation"),
     h("p", { class: "muted" }, "Which account pre-validates employee requests. The request text and the retrieved policy passages are sent to that provider; employee names, e-mail addresses and numbers are not."),
     field("Account", pick, undefined), h("p", { class: "hint" }, validationStatus(s)),
     h("p", { class: "muted" }, h("span", {}, "Requests waiting for validation: "), waiting),
+    h("p", { class: "muted" }, h("span", {}, "Validation failed, will be retried: "), retrying, h("span", {}, " · failed, gave up: "), gaveUp),
     field("Waiting requests validated per minute", rate, `Requests that arrived without an account are picked up automatically, oldest first, once one is available. 0 turns it off. Empty uses the server default (${b.default}). Maximum ${b.max}.`),
+    field("Attempts for a failed validation", attempts, `A validation that failed (provider error, revoked key, upstream outage) is retried automatically after ${b.backoff_minutes.join(", ")} minutes, up to this many attempts in all. 0 never retries. Empty uses the server default (${b.max_attempts_default}). Maximum ${b.max_attempts_max}. Validate waiting requests also retries failed ones, now, and starts their count over.`),
     h("div", { class: "btns" }, h("button", { class: "primary", type: "button", onclick: async (e) => {
       e.target.disabled = true;
       try {
-        await api("/api/v1/validation/settings", { method: "PUT", json: { account: pick.value === DEFAULT ? null : pick.value, backlog_per_minute: rate.value === "" ? null : Number(rate.value) } });
+        await api("/api/v1/validation/settings", { method: "PUT", json: { account: pick.value === DEFAULT ? null : pick.value, backlog_per_minute: rate.value === "" ? null : Number(rate.value), max_attempts: attempts.value === "" ? null : Number(attempts.value) } });
         toast("Saved");
         renderValidation("Saved.");
       } catch (err) { toast(err.message, true); result.className = "error"; result.textContent = err.message; } finally { e.target.disabled = false; }
     } }, "Save"),
     h("button", { class: "secondary", type: "button", onclick: async (e) => {
       e.target.disabled = true;
-      try { const r = await api("/api/v1/requests/validate-pending", { method: "POST" }); toast(r.queued ? `Validating ${r.queued} waiting requests` : "No requests are waiting for validation"); } catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
+      try { const r = await api("/api/v1/requests/validate-pending", { method: "POST" }); toast(r.queued ? `Validating ${r.queued} waiting or failed requests` : "No requests are waiting or failed"); } catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
     } }, "Validate waiting requests")), result);
 }
 

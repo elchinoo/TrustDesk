@@ -193,7 +193,8 @@ def update(conn, request_id: int, payload: dict, *, actor: str) -> dict:
         raise RequestError("note must be text up to 1000 characters")
     updated = conn.execute(
         "UPDATE request SET title=%s, description=%s, start_date=%s, end_date=%s, amount=%s, currency=%s, details=%s, "
-        "status='submitted', validation_state='pending', updated_at=now() WHERE id=%s AND status='needs_info' RETURNING id",
+        "status='submitted', validation_state='pending', validation_attempts=0, validation_retryable=true, "
+        "updated_at=now() WHERE id=%s AND status='needs_info' RETURNING id",
         (n.title, n.description, n.start_date, n.end_date, n.amount, n.currency, Jsonb(n.details), request_id)).fetchone()
     if not updated:
         conn.rollback()
@@ -270,26 +271,66 @@ def claim_validation(conn, request_id: int) -> bool:
     return row is not None
 
 
-def finish_validation(conn, request_id: int, state: str) -> None:
-    """Record how validation ended and hand the request to a person (unless it left the queue meanwhile)."""
-    conn.execute(
+def finish_validation(conn, request_id: int, state: str, *, retryable: bool = True) -> int:
+    """Record how validation ended and hand the request to a person (unless it left the queue meanwhile). A failure counts
+    as one more attempt (any other ending resets the count); returns the number of failed attempts in a row."""
+    failed = state == "failed"
+    row = conn.execute(
         "UPDATE request SET validation_state=%s, status=CASE WHEN status='submitted' THEN 'pending_review' ELSE status END, "
-        "updated_at=now() WHERE id=%s", (state, request_id))
+        "validation_attempts=CASE WHEN %s THEN validation_attempts + 1 ELSE 0 END, "
+        "validation_failed_at=CASE WHEN %s THEN now() END, validation_retryable=CASE WHEN %s THEN %s ELSE true END, "
+        "updated_at=now() WHERE id=%s RETURNING validation_attempts",
+        (state, failed, failed, failed, retryable, request_id)).fetchone()
     conn.commit()
+    return row["validation_attempts"] if row else 0
+
+
+def reset_attempts(conn, request_ids: list[int]) -> None:
+    """A person asked for validation explicitly: the failed attempts so far no longer count against the automatic retry."""
+    if request_ids:
+        conn.execute("UPDATE request SET validation_attempts=0, validation_retryable=true WHERE id = ANY(%s)", (request_ids,))
+        conn.commit()
 
 
 _WAITING = ("((status='submitted' AND (validation_state='pending' OR (validation_state='running' AND "
             "validation_started_at < now() - %s * interval '1 minute'))) OR "
             "(status IN ('submitted','pending_review') AND validation_state='skipped'))")
 
+# A failed validation is retried after 5, then 15, then 60 minutes (and every 60 after that, if the cap allows it).
+RETRY_BACKOFF_MINUTES = (5, 15, 60)
+_FAILED_OPEN = "(validation_state='failed' AND status = ANY(%s))"
+_FAILED_RETRYABLE = _FAILED_OPEN + " AND validation_retryable AND validation_attempts < %s"
+_FAILED_DUE = (_FAILED_RETRYABLE + " AND validation_failed_at < now() - (%s::int[])[LEAST(GREATEST(validation_attempts, 1), "
+               f"{len(RETRY_BACKOFF_MINUTES)})] * interval '1 minute'")
 
-def pending_validation_ids(conn, limit: int = 50, older_than_seconds: int = 0) -> list[int]:
+
+def pending_validation_ids(conn, limit: int = 50, older_than_seconds: int = 0, *, failed: str = "none",
+                           max_attempts: int = 0) -> list[int]:
     """Requests that still lack an AI verdict (never started, skipped for lack of an account, or a stale claim),
-    oldest first. `older_than_seconds` leaves a request that was only just submitted to its own background task."""
+    oldest first. `older_than_seconds` leaves a request that was only just submitted to its own background task.
+    `failed`: 'none' leaves failed validations out, 'due' adds those whose automatic retry is due (backoff elapsed, fewer
+    than `max_attempts` attempts, failure not permanent), 'all' adds every open request whose validation failed."""
+    clause, args = _WAITING, [STALE_RUNNING_MINUTES]
+    if failed == "due" and max_attempts > 0:
+        clause += " OR " + _FAILED_DUE
+        args += [list(OPEN), max_attempts, list(RETRY_BACKOFF_MINUTES)]
+    elif failed == "all":
+        clause += " OR " + _FAILED_OPEN
+        args += [list(OPEN)]
     return [r["id"] for r in conn.execute(
-        f"SELECT id FROM request WHERE {_WAITING} AND submitted_at < now() - %s * interval '1 second' "
-        "ORDER BY submitted_at, id LIMIT %s", (STALE_RUNNING_MINUTES, older_than_seconds, limit)).fetchall()]
+        f"SELECT id FROM request WHERE ({clause}) AND submitted_at < now() - %s * interval '1 second' "
+        "ORDER BY submitted_at, id LIMIT %s", (*args, older_than_seconds, limit)).fetchall()]
 
 
 def waiting_validation_count(conn) -> int:
     return conn.execute(f"SELECT count(*) AS n FROM request WHERE {_WAITING}", (STALE_RUNNING_MINUTES,)).fetchone()["n"]
+
+
+def failed_validation_counts(conn, max_attempts: int) -> dict:
+    """Open requests whose validation failed: how many will be retried automatically, and how many it gave up on (the cap
+    was reached, retries are off, or the failure was a permanent error of the request). A person can still re-run them."""
+    row = conn.execute(
+        "SELECT count(*) FILTER (WHERE validation_retryable AND validation_attempts < %s) AS retrying, "
+        "count(*) FILTER (WHERE NOT (validation_retryable AND validation_attempts < %s)) AS gave_up "
+        f"FROM request WHERE {_FAILED_OPEN}", (max_attempts, max_attempts, list(OPEN))).fetchone()
+    return {"retrying": row["retrying"], "gave_up": row["gave_up"]}

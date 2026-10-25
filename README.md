@@ -118,10 +118,13 @@ You can also configure a single provider from the environment instead of the bro
 | `LLM_CHAT_MODEL` | Chat model, to use this account in Ask. |
 | `EMBEDDING_SEND_DIMENSIONS` | `false` if the provider rejects the `dimensions` field. |
 | `VALIDATE_BACKLOG_PER_MINUTE` | How many waiting requests the background pass validates per minute (default `10`, `0` = off, at most 60). Settings can override it at runtime. |
+| `VALIDATE_MAX_ATTEMPTS` | How many times in all a failed validation is attempted automatically (default `3`, `0` = never retry, at most 10). Settings can override it at runtime. |
 
 **The environment account is the default.** With `LLM_BASE_URL` and `LLM_CHAT_MODEL` set, nothing has to be chosen in Settings: Request validation, Ask and search embeddings use it ("Using the environment account: default"). A choice saved in Settings always wins, including **None** (no AI validation); picking **Default** forgets the saved choice. The dropdown shows what is really saved, and Save confirms on the page. If a stored account has the same base URL and chat model as the environment one, Settings notes "Same endpoint as the environment account" (nothing is deleted for you).
 
 **Catching up.** Requests that arrived while no account was usable are marked "validation skipped". As soon as an account is available, a background pass (once a minute, `VALIDATE_BACKLOG_PER_MINUTE` requests at most, oldest first, recorded in the history like any validation) validates them. It does nothing while there is no account, or while a stored account's key is locked, so it never records a failure for a problem a person can fix. Settings shows how many requests are waiting, lets you change the rate, and keeps **Validate waiting requests** for doing it right now.
+
+**Retrying failures.** A validation that ended in "failed" (provider error, revoked key, upstream 402/502, an answer that was not a valid verdict) is retried by the same background pass after 5, then 15, then 60 minutes, at most `VALIDATE_MAX_ATTEMPTS` attempts in all (the count is kept per request in the database, and every attempt is a line in the request history saying whether another try is coming). A failure that is the provider refusing that very request (HTTP 400, 413 or 422) is not retried. Requests that were already stuck in "failed" before this existed count as one failed attempt, so they are picked up once the cause is fixed. Settings shows how many requests are waiting, failed and will be retried, and failed and gave up, and lets you change the number of attempts. **Validate waiting requests** and **Run again** include failed requests at once and start their attempt count over; editing a request after a question does too.
 
 From a terminal, `trustdesk reembed` re-embeds everything after you change these.
 
@@ -423,7 +426,7 @@ TrustDesk exposes Prometheus metrics at `/metrics` with the same names PagerLens
 |---|---|---|
 | `DATABASE_URL` / `DB_EXTERNAL_DSN` / `PSQL_CONNECTION_STRING` | `PG*` variables | Postgres URI; first one set wins. If none is set, libpq uses `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`. The `vector` and `pg_trgm` extensions must exist (or the role must be allowed to create them). |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address. |
-| `AUTO_SEED` | `false` | With `trustdesk start`, load the demo pack if the knowledge base is empty. |
+| `AUTO_SEED` | `false` | With `trustdesk start`, load the demo pack if the knowledge base is empty. The vault is opened from `TRUSTDESK_ENCRYPTION_KEY` first (the seed embeds through the configured account); if the seed still has to be skipped (vault locked, provider down) it is retried in the background once the app is serving, not at the next restart. |
 | `TRUSTDESK_ENCRYPTION_KEY` | none | Optional platform-managed secret that lets the vault unlock itself after a restart (file alternative: `/etc/trustdesk/encryption_key`). |
 | `TRUSTDESK_ALLOW_PRIVATE_LLM_URLS` | `false` | Allow provider URLs on loopback/private networks, for a local model server. Link-local is always blocked. |
 | `TRUSTDESK_API_KEY` | none | Optional static full-access credential for automation (file alternative: `/etc/trustdesk/api_key`). Prefer API tokens. |
