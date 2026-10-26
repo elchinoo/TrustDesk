@@ -56,7 +56,7 @@ function card(r) {
   const crumb = r.heading || r.title;
   const citation = `${r.title}, ${crumb} (v${r.version}, ${r.source})`;
   return h("article", { class: "card result" },
-    h("h3", {}, r.title),
+    h("h2", {}, r.title),
     h("div", { class: "crumb" }, `${crumb} · v${r.version} · ${r.source}`),
     h("p", { class: "body" }, r.body),
     h("div", { class: "badges" },

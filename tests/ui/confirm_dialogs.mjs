@@ -68,5 +68,12 @@ click(dom.el("settings-embeddings"), "Use for embeddings"); await flush();
 dom.button("Use for embeddings").fire("click"); await flush();
 if (!calls.includes("POST /api/embeddings/activate")) fail("confirming did not activate: " + calls.join(","));
 
+// 4. Escape (the native "cancel" event of the modal <dialog>) cancels like the Cancel button and sends nothing.
+calls.length = 0;
+click(dom.el("settings-security"), "Revoke"); await flush();
+if (!open()) fail("no revoke dialog to cancel with Escape");
+dom.escape(); await flush();
+if (open() || calls.length) fail("Escape must close the dialog and send nothing");
+
 console.log("ok: delete account, revoke token and switch embeddings all ask through the shared dialog");
 process.exit(0);

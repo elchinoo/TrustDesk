@@ -15,6 +15,7 @@ const loader = `export async function resolve(s, c, n) {
 }`;
 register("data:text/javascript," + encodeURIComponent(loader));
 
+const modals = [];   // open modal dialogs, last = topmost
 const contains = (root, el) => root === el || (root.children || []).some((c) => contains(c, el));
 
 class El {
@@ -39,8 +40,9 @@ class El {
   fire(t, ev = {}) { const e = { target: this, preventDefault() {}, ...ev }; for (const f of this.listeners[t] || []) f(e); for (let n = this.parent; n; n = n.parent) for (const f of n.listeners[t] || []) f(e); }
   focus() { document.activeElement = this; }
   setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
-  showModal() { this.open = true; }
-  close() { this.open = false; }
+  // A native <dialog>: showModal() opens it on top of the modal stack, close() leaves it, and the browser fires "cancel" on Escape.
+  showModal() { this.open = true; this.attrs.open = ""; modals.push(this); }
+  close() { this.open = false; delete this.attrs.open; const i = modals.indexOf(this); if (i >= 0) modals.splice(i, 1); }
   scrollIntoView() {}
   get nodeType() { return 1; }
   querySelector() { return null; } querySelectorAll() { return []; } matches() { return false; }
@@ -78,10 +80,11 @@ export async function installDom({ hash, routes, perms = ["*"] }) {
     for (const t of timers.filter((x) => x.live)) { if (t.kind === "timeout") t.live = false; await t.f(); }
     await settle();
   };
-  // The shared modal lives under <body>: these find it and its buttons.
-  const dialog = () => find(document.body, (e) => e.className === "confirm-overlay");
+  // The shared modal is a native <dialog role="alertdialog"> under <body>: these find it (while it is open) and its buttons.
+  const dialog = () => find(document.body, (e) => e.tag === "dialog" && e.attrs.role === "alertdialog" && e.open);
+  const escape = () => { const top = modals[modals.length - 1]; if (top) top.fire("cancel"); };   // what Escape does to a modal dialog
   const button = (label) => find(dialog(), (e) => e.tag === "button" && e.children.some((c) => c.data === label));
-  return { dialog, button, el: (id) => document.getElementById(id), timers, tick, settle, realSetTimeout, realSetInterval };
+  return { dialog, button, escape, el: (id) => document.getElementById(id), timers, tick, settle, realSetTimeout, realSetInterval };
 }
 
 export function fail(msg) { console.error("FAIL: " + msg); process.exit(1); }

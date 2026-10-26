@@ -29,13 +29,14 @@ dialog.window.narrow-window { width: min(34rem, 96vw); background: var(--surface
 dialog.window::backdrop { background: rgb(10 12 28 / .55); }
 dialog .close { position: sticky; float: right; top: 0; z-index: 2; }
 .review-cols { display: grid; grid-template-columns: 1fr 1.25fr; gap: 0 1rem; align-items: start; }
-.card h3 { margin: 0 0 .5rem; font-size: 1.05rem; }
+.card h3, .card.result h2 { margin: 0 0 .5rem; font-size: 1.05rem; }
 .card h4 { margin: 1rem 0 .3rem; font-size: .95rem; color: var(--muted); }
 .card p.body { white-space: pre-wrap; margin: 0 0 .5rem; }
 .card.ai { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); }
 .cite-card { border-left: 3px solid var(--brand-2); padding: .4rem .8rem; margin: .6rem 0; background: color-mix(in srgb, var(--brand-2) 5%, transparent); border-radius: 0 10px 10px 0; }
 .cite-card blockquote { margin: .4rem 0; padding: 0; font-style: italic; }
 .cite-card details { margin-top: .3rem; }
+.cite-card .badge { background: color-mix(in srgb, var(--alt) 15%, var(--surface)); color: var(--alt); }   /* --alt on a surface tint is AA in light and dark; the plain brand badge was not on the cyan card tint */
 .cite-card summary { cursor: pointer; color: var(--muted); font-size: .88rem; }
 .reasons li { margin: .35rem 0; }
 .checks { list-style: none; padding: 0; margin: 0; }

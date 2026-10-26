@@ -1,5 +1,5 @@
 import { api } from "/kit/api.js";
-import { $, confirmDialog, copy, field, fill, fmtDate, h, toast } from "/kit/ui.js";
+import { $, confirmDialog, copy, field, fill, fmtDate, h, scrollRegion, toast } from "/kit/ui.js";
 
 let poller = null;
 
@@ -275,15 +275,15 @@ async function renderSecurity() {
   const table = h("div", {});
   async function renderTokenTable() {
     const list = await api("/api/tokens");
-    table.replaceChildren(list.length ? h("div", { class: "card flush" }, h("table", {},
-      h("thead", {}, h("tr", {}, ...["Name", "Token", "Access", "Created", "Last used", ""].map((t) => h("th", {}, t)))),
+    table.replaceChildren(list.length ? scrollRegion(h("div", { class: "card flush" }, h("table", {},
+      h("thead", {}, h("tr", {}, ...["Name", "Token", "Access", "Created", "Last used", ""].map((t) => h("th", {}, t || h("span", { class: "sr-only" }, "Actions"))))),
       h("tbody", {}, ...list.map((t) => h("tr", {},
         h("td", { class: "title" }, t.name), h("td", {}, h("code", {}, `${t.prefix}…`)), h("td", {}, t.scope),
         h("td", {}, fmtDate(t.created_at)), h("td", {}, fmtDate(t.last_used_at)),
         h("td", { class: "actions" }, t.revoked_at ? h("span", { class: "muted" }, "revoked") : h("button", { class: "danger small", type: "button", onclick: async () => {
           if (!(await confirmDialog(`Revoke "${t.name}"? Clients using it stop working immediately.`, { title: "Revoke token", confirmLabel: "Revoke", danger: true }))) return;
           try { await api(`/api/tokens/${t.id}`, { method: "DELETE" }); toast("Token revoked"); renderTokenTable(); } catch (err) { toast(err.message, true); }
-        } }, "Revoke"))))))) : h("p", { class: "hint" }, "No tokens yet."));
+        } }, "Revoke"))))))), "API tokens") : h("p", { class: "hint" }, "No tokens yet."));
   }
 
   const has = session.has_admin_password;

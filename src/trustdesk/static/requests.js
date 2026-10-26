@@ -236,7 +236,7 @@ function aiCard(d, v) {
     v.missing.length ? h("div", {}, h("h4", {}, "Ask the employee"), h("ul", {}, ...v.missing.map((m) => h("li", {}, m)))) : null,
     h("h4", {}, "Foundation (policy documents)"),
     v.citations.length ? h("div", {}, ...v.citations.map((c) => h("article", { class: "cite-card", id: `cite-${c.n}` },
-      h("div", { class: "badges" }, h("span", { class: "badge" }, `[${c.n}]`), h("strong", {}, c.title), h("span", { class: "muted" }, `› ${c.heading || "intro"} · v${c.version}`)),
+      h("div", { class: "badges" }, h("span", { class: "badge alt" }, `[${c.n}]`), h("strong", {}, c.title), h("span", { class: "muted" }, `› ${c.heading || "intro"} · v${c.version}`)),
       c.quote ? h("blockquote", {}, c.quote) : null,
       c.quote ? h("p", { class: "small-text " + (c.verified ? "ok-text" : "warn-text") }, c.verified ? "✓ Quote found word for word in the document" : "⚠ Quote not found word for word: read the passage") : null,
       h("details", {}, h("summary", {}, "Show the full passage"), h("p", { class: "body" }, passageText(c.n)))))) : h("p", { class: "muted" }, "No policy passage was cited."),

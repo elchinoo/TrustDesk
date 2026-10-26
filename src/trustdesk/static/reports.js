@@ -1,5 +1,5 @@
 import { api } from "/kit/api.js";
-import { $, ADVICE, badge, COMPLIANCE, fill, fmtDateTime, fmtDay, h, STATUS, toast } from "/kit/ui.js";
+import { $, ADVICE, badge, COMPLIANCE, fill, fmtDateTime, fmtDay, h, scrollRegion, STATUS, toast } from "/kit/ui.js";
 
 let wired = false;
 let catalogue = [];
@@ -60,11 +60,11 @@ async function run() {
       h("h2", { class: "section-title" }, r.title),
       h("p", { class: "muted" }, r.description + range),
       r.truncated ? h("div", { class: "banner" }, "Only the first 5,000 rows are shown. Narrow the dates, or download the CSV.") : null,
-      r.rows.length ? h("div", { class: "card flush" }, h("table", { class: "report" },
+      r.rows.length ? scrollRegion(h("div", { class: "card flush" }, h("table", { class: "report" },
         h("thead", {}, h("tr", {}, ...r.columns.map((c) => h("th", { class: c.type === "number" ? "num" : "" }, c.label)))),
         h("tbody", {}, ...r.rows.map((row) => h("tr", {}, ...r.columns.map((c) => cell(c, row))))),
         r.totals ? h("tfoot", {}, h("tr", {}, ...r.columns.map((c, i) => h("td", { class: c.type === "number" ? "num" : "" },
-          i === 0 ? "Total" : (r.totals[c.key] ?? ""))))) : null))
+          i === 0 ? "Total" : (r.totals[c.key] ?? ""))))) : null)), r.title)
         : h("p", { class: "empty" }, "No rows for this period."),
       h("p", { class: "muted small-text" }, `${r.rows.length} rows · generated ${new Date().toLocaleString()}`));
   } catch (err) { fill(out, h("p", { class: "error" }, err.message)); }

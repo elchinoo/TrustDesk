@@ -8,7 +8,7 @@ import { initRequests } from "/static/requests.js";
 import { initSearch } from "/static/search.js";
 import { initSettings } from "/static/settings.js";
 import { bootSession, can, refreshSession, renderLogin, renderSetup, renderVaultBanner, state } from "/kit/session.js";
-import { $, h } from "/kit/ui.js";
+import { $, h, scrollRegion } from "/kit/ui.js";
 
 const TABS = ["requests", "employees", "reports", "documents", "search", "ask", "settings", "connect"];
 const INIT = { requests: initRequests, employees: initEmployees, reports: initReports, search: initSearch, ask: initAsk, documents: initDocuments, settings: initSettings, connect: initConnect };
@@ -16,6 +16,10 @@ const SECTIONS = ["auth-card", "vault-banner", "nav", "signout", ...TABS.map((t)
 
 // Earlier versions kept the API key in sessionStorage. Nothing writes it any more; remove any leftover.
 try { sessionStorage.removeItem("trustdesk.key"); } catch { /* storage unavailable */ }
+
+// Wide tables and code blocks scroll on a phone: make every such container reachable by keyboard.
+for (const [id, label] of [["req-table", "Requests"], ["emp-table", "Employees"], ["doc-table", "Documents"]]) scrollRegion($(id).parentElement, label);
+for (const [i, pre] of [...document.querySelectorAll("pre.code")].entries()) scrollRegion(pre, `Code example ${i + 1}`);
 
 function hideAll() { for (const id of SECTIONS) $(id).hidden = true; }
 
