@@ -67,10 +67,10 @@ export async function installDom({ hash, routes, perms = ["*"] }) {
   };
   const { state } = await import("/kit/session.js");
   state.session = { state: "logged_in", user: { permissions: perms } };
-  // Timers: nothing fires by itself. A test runs the pending ones by hand, in order.
+  // Timers: nothing fires by itself (the requested delay is kept in `ms`). A test runs the pending ones by hand, in order.
   const realSetTimeout = globalThis.setTimeout, realSetInterval = globalThis.setInterval;
   const timers = [];
-  globalThis.setTimeout = (f) => { const t = { f, kind: "timeout", live: true }; timers.push(t); return t; };
+  globalThis.setTimeout = (f, ms) => { const t = { f, ms, kind: "timeout", live: true }; timers.push(t); return t; };
   globalThis.clearTimeout = (t) => { if (t) t.live = false; };
   globalThis.setInterval = (f) => { const t = { f, kind: "interval", live: true }; timers.push(t); return t; };
   globalThis.clearInterval = (t) => { if (t) t.live = false; };

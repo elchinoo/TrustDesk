@@ -122,21 +122,46 @@ function row(r) {
 let stream = null;
 let streamLive = false;
 let liveTimer = null;
+// Watchdog: some ingresses buffer the whole response, so the stream stays CONNECTING (no hello, no error) for ever. If no hello arrives
+// in time, give up on the stream (the poll takes over) and try once more later; a second silent attempt is the end of it for this visit.
+export const LIVE_TIMING = { helloMs: 6000, retryMs: 60000 };
+let watchdog = null;
+let retryTimer = null;
+let retried = false;      // the single retry has been used
+let gaveUp = false;       // the watchdog tripped: no new stream until the retry (or until the page is left and opened again)
 
 function startLive() {
-  if (stream || typeof EventSource === "undefined" || !can("requests:read")) return;
+  if (stream || gaveUp || typeof EventSource === "undefined" || !can("requests:read")) return;
   try { stream = new EventSource("/api/requests/events"); } catch { stream = null; return; }
-  stream.addEventListener("hello", (e) => { streamLive = parseLive(e); if (streamLive) clearTimeout(pollTimer); else schedulePoll(); });
-  stream.addEventListener("changed", (e) => {
+  const mine = stream;
+  clearTimeout(watchdog);
+  watchdog = setTimeout(() => {
+    if (stream !== mine) return;
+    mine.close();
+    stream = null;
+    streamLive = false;
+    gaveUp = true;
+    schedulePoll();                                                      // the normal poll is the fallback
+    if (!retried) {
+      retried = true;
+      retryTimer = setTimeout(() => { gaveUp = false; startLive(); }, LIVE_TIMING.retryMs);
+    }
+  }, LIVE_TIMING.helloMs);
+  mine.addEventListener("hello", (e) => { clearTimeout(watchdog); streamLive = parseLive(e); if (streamLive) clearTimeout(pollTimer); else schedulePoll(); });
+  mine.addEventListener("changed", (e) => {
     streamLive = parseLive(e);
     clearTimeout(liveTimer);
     liveTimer = setTimeout(() => { if (!document.getElementById("view-requests").hidden) load(); }, 250);   // a burst is one refresh
   });
-  stream.onerror = () => { streamLive = false; schedulePoll(); };   // the browser reconnects by itself; meanwhile poll
+  mine.onerror = () => { streamLive = false; schedulePoll(); };   // the browser reconnects by itself; meanwhile poll
 }
 
 export function stopLive() {
   clearTimeout(liveTimer);
+  clearTimeout(watchdog);
+  clearTimeout(retryTimer);
+  retried = false;
+  gaveUp = false;
   if (stream) stream.close();
   stream = null;
   streamLive = false;

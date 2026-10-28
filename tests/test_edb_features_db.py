@@ -188,6 +188,44 @@ def test_hardening_skips_quietly_without_the_role(roles):
         assert c.execute("SELECT to_regclass('employee_masked') IS NULL AS none").fetchone()["none"]
 
 
+def test_a_grant_after_startup_reopens_the_base_tables_and_the_reassert_tick_closes_them(roles):
+    from apgkit import masking
+    fresh_schema(default_select_for_readonly=True)
+    migrate.run()
+    with connect() as c:
+        employee(c, "E1", "Alice Smith", "alice@example.com")
+        c.commit()
+    with connect() as c:
+        assert not masking.drift(c, hardening.DENY)       # after migrate everything is closed
+    with connect() as c:          # what `agentpg db-users create` does afterwards
+        c.execute("GRANT SELECT ON ALL TABLES IN SCHEMA public TO a1p_readonly")
+        c.commit()
+        assert set(masking.drift(c, hardening.DENY)) == set(hardening.DENY)
+    with ro() as u:
+        assert u.execute("SELECT count(*) AS n FROM employee").fetchone()["n"] == 1      # the hole, before the re-assert
+    assert masking.reassert_tick(core.db.connect, hardening.apply, deny=hardening.DENY, metrics=core.metrics) is True
+    st = masking.status()
+    assert st["ok"] and st["last_ok"] and st["drift"] == len(hardening.DENY)
+    with ro() as u:
+        for table in ("employee", "request", "app_setting", "api_token"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                u.execute(f"SELECT * FROM {table}")
+        assert u.execute("SELECT count(*) AS n FROM employee_masked").fetchone()["n"] == 1
+    assert masking.reassert_tick(core.db.connect, hardening.apply, deny=hardening.DENY, metrics=core.metrics)
+    assert masking.status()["drift"] == 0
+    assert 'masking_drift_tables 0.0' in core.metrics.render()[0].decode()
+
+
+def test_the_app_runs_the_reassert_loop_and_shows_its_status_to_admins(client, migrated):
+    deadline = time.time() + 10
+    from apgkit import masking
+    while not masking.status()["last_ok"] and time.time() < deadline:
+        time.sleep(0.1)
+    st = client.get("/api/accounts", headers=ADMIN).json()["masking"]
+    assert st["ok"] is True and st["last_ok"] and st["drift"] is not None
+    assert client.get("/api/accounts").status_code == 401           # not public
+
+
 # ---- (2) unaccent ---------------------------------------------------------------------------------------------
 @needs_unaccent
 def test_unaccent_finds_accented_names_both_ways(migrated):
@@ -340,7 +378,9 @@ def test_stream_frames_and_cleanup():
         hub.live = True
         gen = live.stream(hub, heartbeat=0.2)
         hello = await gen.__anext__()
-        assert hello.startswith("retry: 5000") and "event: hello" in hello and '"live": true' in hello
+        assert hello.startswith(": " + " " * 2048 + "\nretry: 5000") and "event: hello" in hello and '"live": true' in hello
+        assert hello.index("retry:") > len(live.PADDING) - 1 and len(hello.split("\n", 1)[0]) >= 2048      # padding line first, then retry, then hello
+        assert all(line.startswith((":", "retry:", "event:", "data:")) or not line for line in hello.splitlines())
         hub.publish("x")
         hub.publish("y")                                               # collapsed: one pending notification is enough
         assert "event: changed" in await gen.__anext__()

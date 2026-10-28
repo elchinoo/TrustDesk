@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import psycopg
-from apgkit import insights
+from apgkit import insights, masking
 from apgkit.auth.rp import safe_return_to
 from apgkit.config import env_bool
 from apgkit.guard import SecurityGuard
@@ -21,6 +21,7 @@ from . import (
     api_v1,
     core,
     embedcfg,
+    hardening,
     live,
     metrics,
     reembed_job,
@@ -92,11 +93,17 @@ async def _seed_retry_loop() -> None:
         await asyncio.sleep(seedpack.RETRY_INTERVAL)
 
 
+MASKING_EVERY = 300.0     # seconds between re-asserts of what the read-only database role may read (see hardening.py)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     _startup_tasks()
     backlog = asyncio.create_task(_backlog_loop())
     seed_retry = asyncio.create_task(_seed_retry_loop())
+    # grants made after startup (`agentpg db-users create`, default privileges) reopen base tables to the read-only role: re-assert
+    reasserter = asyncio.create_task(masking.reassert_forever(
+        core.db.connect, hardening.apply, MASKING_EVERY, deny=hardening.DENY, metrics=core.metrics))
     listener = live.Listener(lambda: connect(retries=1))       # one LISTEN connection for all browsers (see live.py)
     listener.start()
     try:
@@ -105,6 +112,8 @@ async def lifespan(_: FastAPI):
     finally:
         backlog.cancel()
         seed_retry.cancel()
+        reasserter.cancel()
+        await asyncio.gather(backlog, seed_retry, reasserter, return_exceptions=True)
         listener.stop()
 
 
@@ -580,7 +589,7 @@ def list_accounts():
     with connect() as conn:
         embedcfg.ensure_loaded(conn)
         return {"accounts": accounts.list_accounts(conn), "env": accounts.env_account(),
-                "vault": vault.status(conn), "active_embedding": accounts.active_embedding_ref(conn)}
+                "vault": vault.status(conn), "masking": masking.status(), "active_embedding": accounts.active_embedding_ref(conn)}
 
 
 @app.get("/api/ask/accounts", dependencies=[Depends(require("ask"))])

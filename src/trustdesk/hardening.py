@@ -1,7 +1,8 @@
 """What AgentPG's read-only role (`a1p_readonly`) and its restricted MCP server may read in this database.
 
 Run after every migrate (agentpg-kit `migrate.run(after_migrate=[...])`), because AgentPG's default privileges give the role SELECT
-on every new table. Two kinds of protection, both enforced by the database whatever client connects:
+on every new table, and again every 5 minutes while the app runs (`masking.reassert_forever` in the api.py lifespan), because
+`agentpg db-users create` and those default privileges re-grant SELECT on base tables after startup. Two kinds of protection, both enforced by the database whatever client connects:
 
 * personal data: the base table is taken away and a masked view `<table>_masked` is granted instead (`apgkit.masking.mask_view`);
 * secrets, hashes and ciphertext: the base table is taken away and nothing replaces it (`hide_table`).
@@ -12,7 +13,6 @@ Only the table owner can revoke; a revoke that did not take is reported (`denied
 import logging
 
 import psycopg
-import psycopg.sql
 from apgkit import masking
 
 log = logging.getLogger("trustdesk.hardening")
@@ -44,25 +44,19 @@ MASKED = {
 HIDDEN = ("app_setting", "llm_account", "api_token", "web_session", "oidc_login")
 
 
+# Every base table the read-only role must NOT be able to read: the masked ones (a view replaces them) and the hidden ones. The re-assert
+# loop (api.py lifespan) counts how many of these the role could read before each re-apply: `masking_drift_tables`.
+DENY = (*MASKED, *HIDDEN)
+
+
 def hide_table(conn: psycopg.Connection, table: str, role: str = ROLE) -> dict:
-    """REVOKE SELECT on `table` from the read-only role, without a replacement view. Returns {"applied", "reason", "denied"}."""
-    conn.commit()
-    prev = conn.autocommit
-    conn.autocommit = True
-    try:
-        if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
-            return {"applied": False, "reason": f"role {role} does not exist", "denied": False}
-        if not conn.execute("SELECT to_regclass(%s) IS NOT NULL AS ok", (f"public.{table}",)).fetchone()["ok"]:
-            return {"applied": False, "reason": "table does not exist", "denied": False}
-        conn.execute(psycopg.sql.SQL("REVOKE SELECT ON {} FROM {}").format(
-            psycopg.sql.Identifier("public", table), psycopg.sql.Identifier(role)))
-        denied = not conn.execute("SELECT has_table_privilege(%s, %s::regclass, 'SELECT') AS ok",
-                                  (role, f"public.{table}")).fetchone()["ok"]
-    finally:
-        conn.autocommit = prev
-    if not denied:
-        log.warning("hardening %s: %s can still read it (not the owner, or PUBLIC has SELECT)", table, role)
-    return {"applied": denied, "reason": "" if denied else "table still readable by the role", "denied": denied}
+    """REVOKE SELECT on `table` from the read-only role, without a replacement view (kit `masking.deny_tables`).
+    Returns {"applied", "reason", "denied"}."""
+    res = masking.deny_tables(conn, [table], readonly_role=role)
+    if table in res["skipped"]:
+        return {"applied": False, "reason": "table does not exist", "denied": False}
+    denied = bool(res["tables"].get(table, False))
+    return {"applied": denied, "reason": "" if denied else (res["reason"] or "table still readable by the role"), "denied": denied}
 
 
 def apply(conn: psycopg.Connection, role: str = ROLE) -> dict:

@@ -106,6 +106,11 @@ class Listener(threading.Thread):
         self.hub.live = False
 
 
+# A comment line of about 2 KB, sent before anything else: proxies that buffer a response until a few KB arrive (some ingresses do, whatever
+# X-Accel-Buffering says) then flush the first frame at once. SSE clients ignore comment lines, so it is harmless everywhere else.
+PADDING = ": " + " " * 2048 + "\n"
+
+
 def _frame(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
@@ -119,7 +124,7 @@ async def stream(target: Hub = hub, is_disconnected: Callable[[], "asyncio.Futur
         yield _frame("busy", {"live": False})
         return
     try:
-        yield "retry: 5000\n\n" + _frame("hello", {"live": target.live})
+        yield PADDING + "retry: 5000\n\n" + _frame("hello", {"live": target.live})
         while True:
             if is_disconnected is not None:
                 gone = is_disconnected()
