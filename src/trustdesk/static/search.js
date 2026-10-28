@@ -52,7 +52,11 @@ async function run() {
   } catch (err) { out.replaceChildren(); toast(err.message, true); }
 }
 
-function card(r) {
+// The trigram signal matched and the exact-word (full-text) signal did not: the words are close to the query (a typo, a missing accent), not equal to it.
+// The vector signal usually returns something for any query, so it is not part of this test.
+export const typoOnly = (r) => r.trgm_rank != null && r.lex_rank == null;
+
+export function card(r) {
   const crumb = r.heading || r.title;
   const citation = `${r.title}, ${crumb} (v${r.version}, ${r.source})`;
   return h("article", { class: "card result" },
@@ -62,6 +66,8 @@ function card(r) {
     h("div", { class: "badges" },
       r.vec_rank != null ? h("span", { class: "badge" }, "vector #" + r.vec_rank) : null,
       r.lex_rank != null ? h("span", { class: "badge alt" }, "text #" + r.lex_rank) : null,
+      r.trgm_rank != null ? h("span", { class: "badge warn", title: "similarity " + (r.trgm_score ?? 0).toFixed(2) }, "typo-tolerant #" + r.trgm_rank) : null,
+      typoOnly(r) ? h("span", { class: "badge plain" }, "typo-tolerant match") : null,
       h("span", { class: "badge plain" }, "score " + r.score.toFixed(4)),
       h("span", { class: "spacer" }),
       h("button", { class: "secondary small", type: "button", onclick: () => copy(citation, "Citation copied") }, "Copy citation")));

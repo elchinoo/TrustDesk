@@ -143,17 +143,25 @@ def listing(conn, *, query: str | None, status: str | None, limit: int, offset: 
     if status in {"active", "inactive"}:
         where.append("e.status=%s")
         args.append(status)
+    join, join_args, order, order_args = "", [], "e.name, e.id", []
     if query:
         cond, found = textsearch.ilike_any(conn, ["e.name", "e.email", "e.employee_no", "e.department"], query)
-        where.append(cond)
+        hits = textsearch.fuzzy_hits(conn, "employee e", "e.id", ["e.name"], query)
+        if hits:    # typo matches (pg_trgm) come after the exact and substring matches, most similar first
+            join, join_args = textsearch.fuzzy_join("e", "id", hits)
+            where.append(f"({cond} OR fz.id IS NOT NULL)")
+            order = f"({cond}) DESC, CASE WHEN {cond} THEN 0 ELSE -fz.sim END, " + order
+            order_args = found * 2
+        else:
+            where.append(cond)
         args += found
     clause = " AND ".join(where)
-    total = conn.execute(f"SELECT count(*) AS n FROM employee e WHERE {clause}", args).fetchone()["n"]
+    total = conn.execute(f"SELECT count(*) AS n FROM employee e{join} WHERE {clause}", [*join_args, *args]).fetchone()["n"]
     rows = conn.execute(
         f"SELECT e.employee_no, e.name, e.email, e.department, e.title, e.level, e.country, e.hire_date, e.status, "
         f"m.employee_no AS manager_no, "
         f"(SELECT count(*) FROM request r WHERE r.employee_id=e.id) AS requests, "
         f"(SELECT count(*) FROM request r WHERE r.employee_id=e.id AND r.status IN ('submitted','pending_review','needs_info')) AS open_requests "
-        f"FROM employee e LEFT JOIN employee m ON m.id=e.manager_id WHERE {clause} "
-        f"ORDER BY e.name, e.id LIMIT %s OFFSET %s", (*args, limit, offset)).fetchall()
+        f"FROM employee e LEFT JOIN employee m ON m.id=e.manager_id{join} WHERE {clause} "
+        f"ORDER BY {order} LIMIT %s OFFSET %s", (*join_args, *args, *order_args, limit, offset)).fetchall()
     return {"total": total, "items": rows}

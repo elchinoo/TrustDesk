@@ -261,8 +261,11 @@ def test_unaccent_policy_search_is_accent_insensitive(migrated):
 @needs_unaccent
 def test_without_unaccent_search_degrades_to_exact_matching(migrated, monkeypatch):
     monkeypatch.setattr(textsearch, "has_unaccent", lambda conn: False)
-    with connect() as c:
+    with connect() as c:      # and the folding function as migration 007 defines it where unaccent is missing: lower-case only
+        c.execute("CREATE OR REPLACE FUNCTION public.td_fold(text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT AS $f$ SELECT lower($1) $f$")
+        c.commit()
         employee(c, "E1", "José Peña", "jp@example.com")
+        monkeypatch.setattr(textsearch, "trigram_ready", lambda conn: False)     # typo tolerance would still find "jose" by similarity
         assert people.listing(c, query="jose", status=None, limit=10, offset=0)["total"] == 0
         assert people.listing(c, query="josé", status=None, limit=10, offset=0)["total"] == 1       # still works, exactly
         assert textsearch.fts_config(c) == "english"

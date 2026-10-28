@@ -179,7 +179,7 @@ Limits worth knowing: the AI only advises and can be wrong, so read the quoted p
 - **Requests:** the queue (open by default) with counts, filters and the review window described above. **New request** adds one on behalf of an employee.
 - **Employees:** add, edit, deactivate; **Requests** jumps to that person's requests.
 - **Reports:** pick a report and dates, run it, print it or download the CSV.
-- **Search:** ask in plain language. Each result shows its document, heading, version and how it ranked in the vector and full-text searches. "Copy citation" copies a ready-to-paste reference.
+- **Search:** ask in plain language. Each result shows its document, heading, version and how it ranked in the vector, full-text and typo-tolerant (`pg_trgm`) searches, so a misspelt query like "vaction polcy" still finds the vacation policy. "Copy citation" copies a ready-to-paste reference.
 - **Ask:** choose an account and ask a question. You get an answer with `[1]`-style citations that jump to the numbered source passages. Treat it as a draft: check the sources.
 - **Documents:** drag files in (Markdown, text, PDF; 10 MB max each), choosing the type first (HR, travel, expense, governance, security or general). Re-uploading a changed file replaces the old version. **Load demo policies** adds a fictional policy pack. **View** shows how a document was split into chunks.
 - **Settings:** provider accounts, which account provides embeddings, your admin password and API tokens.

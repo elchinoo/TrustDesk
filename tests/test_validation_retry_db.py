@@ -249,7 +249,7 @@ def test_upgrade_counts_requests_that_were_already_failed_as_one_attempt(client)
         c.execute("INSERT INTO validation (request_id, state, error, created_at) VALUES (%s,'failed','HTTP 402', "
                   "now() - interval '3 days')", (ids[0],))
         c.commit()
-    assert migrate.run() == ["005_validation_retry.sql", "006_unaccent_tcn.sql"]   # 006 only adds optional extensions
+    assert migrate.run() == ["005_validation_retry.sql", "006_unaccent_tcn.sql", "007_trigram_search.sql"]   # 006 and 007 only add optional extensions and indexes
     with connect() as c:
         failed, done = (c.execute("SELECT validation_attempts AS a, validation_retryable AS r, "
                                   "(validation_failed_at < now() - interval '2 days') AS old FROM request WHERE id=%s",

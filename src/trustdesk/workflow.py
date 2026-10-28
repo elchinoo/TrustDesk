@@ -149,17 +149,25 @@ def listing(conn, *, employee_no=None, status=None, type_=None, kind=None, date_
     if ai in {"approve", "reject", "needs_info", "manual"}:
         where.append("v.recommendation = %s")
         args.append(ai)
+    join, join_args, order, order_args = "", [], "r.submitted_at DESC, r.id DESC", []
     if search:
         cond, found = textsearch.ilike_any(conn, ["r.title", "e.name", "e.employee_no"], search)
-        where.append(cond)
+        hits = textsearch.fuzzy_hits(conn, "request r JOIN employee e ON e.id = r.employee_id", "r.id", ["r.title", "e.name"], search)
+        if hits:    # typo matches (pg_trgm) come after the exact and substring matches, most similar first
+            join, join_args = textsearch.fuzzy_join("r", "id", hits)
+            where.append(f"({cond} OR fz.id IS NOT NULL)")
+            order = f"({cond}) DESC, CASE WHEN {cond} THEN 0 ELSE -fz.sim END, " + order
+            order_args = found * 2
+        else:
+            where.append(cond)
         args += found
     clause = " AND ".join(where)
     total = conn.execute(
         "SELECT count(*) AS n FROM request r JOIN employee e ON e.id=r.employee_id "
         "LEFT JOIN LATERAL (SELECT recommendation FROM validation WHERE request_id=r.id ORDER BY id DESC LIMIT 1) v ON true "
-        f"WHERE {clause}", args).fetchone()["n"]
-    rows = conn.execute(_SELECT + f"WHERE {clause} ORDER BY r.submitted_at DESC, r.id DESC LIMIT %s OFFSET %s",
-                        (*args, limit, offset)).fetchall()
+        f"{join} WHERE {clause}", [*join_args, *args]).fetchone()["n"]
+    rows = conn.execute(_SELECT + f"{join} WHERE {clause} ORDER BY {order} LIMIT %s OFFSET %s",
+                        (*join_args, *args, *order_args, limit, offset)).fetchall()
     return {"total": total, "items": [_shape(r) for r in rows]}
 
 
