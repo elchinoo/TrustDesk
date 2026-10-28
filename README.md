@@ -4,6 +4,8 @@
 
 A **compliance workspace** built on **Postgres + pgvector**, with a web app, a REST API and an **MCP server**. Load your company rules (HR, travel, expenses, security), let your applications send employee requests (vacation, sick leave, trips, expense reimbursements and anything else), and have every request **pre-validated by an AI model against your own documents** before an approver decides. The advice comes with the reasons and the quoted passages it is based on. You can also search the documents and ask questions that cite their sources.
 
+**Documentation:** [docs/GUIDE.md](docs/GUIDE.md) is the complete guide (ecosystem fit, architecture, install, configuration, operations, limitations); [docs/VIDEO-SCRIPT.md](docs/VIDEO-SCRIPT.md) is a 6-minute tutorial video script; [API.md](API.md) and [SECURITY.md](SECURITY.md) cover the client API and the security model. The section [EDB and AgentPG capabilities used by this app](docs/GUIDE.md#edb-and-agentpg-capabilities-used-by-this-app) lists the database features it uses (insights, masked read-only access, `unaccent`, `tcn` live updates) and what degrades without them.
+
 > [!WARNING]
 > **Hosted sandboxes can pause themselves and then answer `503`.**
 > If you deploy TrustDesk on a platform whose free tier auto-pauses idle workloads (AgentPG sandboxes do), the app stops after a period of inactivity and the platform returns an empty **HTTP 503** for every URL until you resume it. Your data is safe (it lives in the database), but the app is unreachable.
@@ -38,6 +40,8 @@ set -a; . ./.env; set +a
 .venv/bin/trustdesk migrate
 .venv/bin/trustdesk serve         # http://localhost:8000
 ```
+
+`pyproject.toml` takes the shared kit (`agentpg-kit`) from the same release tag the Docker image installs (`v0.2.5`), so no sibling checkout is needed. If you are also changing the kit, install your checkout over it: `uv pip install -e ../agentpg-kit` (or `make kit-local`).
 
 The first time the server starts it prints a **one-time setup code** to its console:
 
@@ -147,9 +151,11 @@ TrustDesk can run **standalone** (the first-run setup code and an admin password
 
 | Role | May |
 |---|---|
-| `admin` | everything, including provider accounts, tokens, validation settings and demo data |
-| `approver` | read and search, ask, submit requests, **decide requests**, run validation again, open reports |
-| `viewer` | read and search, see requests, their AI advice and reports; cannot decide |
+| `admin` | everything, including documents (upload, delete), provider accounts, tokens, validation settings and demo data |
+| `approver` | read and search, **ask** (the Ask tab, with a list of account names only), submit requests, **decide requests**, run validation again, open reports. Cannot change documents, accounts or settings |
+| `viewer` | read and search, see requests, their AI advice and reports; cannot decide or ask |
+
+Documents can be uploaded and deleted only with the `kb:write` permission, which only `admin` holds. Asking spends provider credit, so it is its own permission (`ask`); approvers have it and get a narrow, read-only list of the accounts that can chat (`GET /api/ask/accounts`: name and model, no URL or key details). The full accounts listing (`/api/accounts`) stays admin-only.
 
 Services use `client_credentials` instead of a hand-copied token: scope `trustdesk.requests.write` makes a service a client
 application (create employees and requests, no AI advice, no decisions), `trustdesk.kb.read` lets it search, `trustdesk.metrics`
@@ -177,6 +183,7 @@ Limits worth knowing: the AI only advises and can be wrong, so read the quoted p
 - **Ask:** choose an account and ask a question. You get an answer with `[1]`-style citations that jump to the numbered source passages. Treat it as a draft: check the sources.
 - **Documents:** drag files in (Markdown, text, PDF; 10 MB max each), choosing the type first (HR, travel, expense, governance, security or general). Re-uploading a changed file replaces the old version. **Load demo policies** adds a fictional policy pack. **View** shows how a document was split into chunks.
 - **Settings:** provider accounts, which account provides embeddings, your admin password and API tokens.
+- **Database:** (admin) slow statements, tuner recommendations and index hints from EDB's extensions, where the database has them.
 - **Connect:** pick your AI client and copy a ready-made configuration with this server's URL filled in.
 
 Scripting uploads needs an API token with **full** access (Settings > API tokens):

@@ -8,7 +8,7 @@ import re
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import request_types
+from . import request_types, textsearch
 from .request_types import RequestError
 
 OPEN = ("submitted", "pending_review", "needs_info")
@@ -150,9 +150,9 @@ def listing(conn, *, employee_no=None, status=None, type_=None, kind=None, date_
         where.append("v.recommendation = %s")
         args.append(ai)
     if search:
-        like = "%" + re.sub(r"([\\%_])", r"\\\1", search) + "%"
-        where.append("(r.title ILIKE %s OR e.name ILIKE %s OR e.employee_no ILIKE %s)")
-        args += [like] * 3
+        cond, found = textsearch.ilike_any(conn, ["r.title", "e.name", "e.employee_no"], search)
+        where.append(cond)
+        args += found
     clause = " AND ".join(where)
     total = conn.execute(
         "SELECT count(*) AS n FROM request r JOIN employee e ON e.id=r.employee_id "

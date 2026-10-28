@@ -38,6 +38,7 @@ export async function initRequests() {
   $("req-type").value = filters.type;
   $("req-ai").value = filters.ai;
   $("req-q").value = filters.q;
+  startLive();
   await Promise.all([load(), renderNotice()]);
 }
 
@@ -115,11 +116,41 @@ function row(r) {
     h("td", { class: "col-added" }, fmtDay(r.submitted_at)));
 }
 
+// Live updates: Postgres tcn notifies the server on every change of a request row and the server relays it as a Server-Sent Event
+// ("changed"). We then re-read the list and counts through the normal API. If the stream is not live (no tcn on this database, the
+// connection dropped, no EventSource), the poll below is the fallback and works exactly as before.
+let stream = null;
+let streamLive = false;
+let liveTimer = null;
+
+function startLive() {
+  if (stream || typeof EventSource === "undefined" || !can("requests:read")) return;
+  try { stream = new EventSource("/api/requests/events"); } catch { stream = null; return; }
+  stream.addEventListener("hello", (e) => { streamLive = parseLive(e); if (streamLive) clearTimeout(pollTimer); else schedulePoll(); });
+  stream.addEventListener("changed", (e) => {
+    streamLive = parseLive(e);
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(() => { if (!document.getElementById("view-requests").hidden) load(); }, 250);   // a burst is one refresh
+  });
+  stream.onerror = () => { streamLive = false; schedulePoll(); };   // the browser reconnects by itself; meanwhile poll
+}
+
+export function stopLive() {
+  clearTimeout(liveTimer);
+  if (stream) stream.close();
+  stream = null;
+  streamLive = false;
+}
+
+function parseLive(e) { try { return JSON.parse(e.data).live === true; } catch { return false; } }
+
 function schedulePoll() {
-  // While anything is still being validated, keep the list fresh without the user having to reload.
-  if (!items.some((r) => r.status === "submitted") || polls > 60) { polls = 0; return; }
+  // While anything is still being validated, keep the list fresh without the user having to reload (unless the live stream does).
+  clearTimeout(pollTimer);
+  if (streamLive || !items.some((r) => r.status === "submitted") || polls > 60) { polls = 0; return; }
   polls += 1;
-  pollTimer = setTimeout(() => { if (location.hash.slice(1) === "requests") load(); }, 2500);
+  // poll while the Requests view is visible: also the default tab, where the address has no #requests
+  pollTimer = setTimeout(() => { if (!document.getElementById("view-requests").hidden) load(); }, 2500);
 }
 
 function renderOnboarding() {

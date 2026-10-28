@@ -4,6 +4,7 @@ from prometheus_client import Counter, Histogram
 from prometheus_client.core import GaugeMetricFamily
 
 from .core import metrics as _kit
+from .db import connect
 
 APP = "trustdesk"
 REGISTRY = _kit.registry          # the kit's registry already carries http_requests_total, http_request_duration_seconds, app_info, process_*
@@ -19,8 +20,6 @@ class DatabaseCollector:
     """Evaluated at scrape time: is the database reachable, and how big is the knowledge base."""
 
     def collect(self):
-        from .db import connect
-
         up, docs = 0, 0
         try:
             with connect(retries=1) as conn:
@@ -56,3 +55,5 @@ class DatabaseCollector:
 
 
 REGISTRY.register(DatabaseCollector())
+
+_kit.add_insights_collector(lambda: connect(retries=1))   # db_insights_* (cached 30 s, never fails a scrape)

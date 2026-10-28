@@ -1,12 +1,12 @@
 [project]
 name = "trustdesk"
 version = "0.1.0"
-description = "Security questionnaire workspace: Postgres + pgvector hybrid search with a REST API and an MCP server."
+description = "Compliance workspace: employee requests pre-validated by AI against company policies, on Postgres + pgvector, with a REST API and an MCP server."
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-  "agentpg-kit>=0.2.5",
+  "agentpg-kit>=0.3.0",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "psycopg[binary,pool]>=3.2",
@@ -46,6 +46,9 @@ ignore = ["B008", "B905", "E501"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402"]
 
-# Local development: use the sibling checkout of the kit. Images install the published kit instead (see Dockerfile).
+# The shared kit comes from the same release the Dockerfile installs (tag v0.3.0), so a plain `uv pip install -e ".[dev]"` works
+# without any sibling checkout. To work on the kit at the same time, install your checkout over it afterwards:
+#   uv pip install -e ../agentpg-kit     (or: make kit-local)
+# When you raise the minimum in `dependencies`, raise this tag and the KIT_URL in the Dockerfile together.
 [tool.uv.sources]
-agentpg-kit = { path = "../agentpg-kit", editable = true }
+agentpg-kit = { git = "https://github.com/elchinoo/agentpg-kit", tag = "v0.3.0" }

@@ -190,3 +190,44 @@ def test_sso_endpoints_are_404_when_federation_is_off(client, monkeypatch):
     assert client.get("/auth/login", follow_redirects=False).status_code == 404
     assert client.get("/auth/callback", follow_redirects=False).status_code == 404
     assert client.get("/api/session").json()["sso"] is None
+
+
+def test_approvers_may_ask_with_a_narrow_account_list_but_cannot_open_accounts(client, monkeypatch):
+    approver, viewer = access(roles=["trustdesk:approver"]), access(sub="usr_2", roles=["trustdesk:viewer"])
+    admin = access(sub="usr_3", roles=["trustdesk:admin"])
+    with connect() as c:   # inserted directly: the outbound URL guard (DNS) is not what this test is about
+        new_id = c.execute("INSERT INTO llm_account (name, provider, base_url, chat_model) VALUES ('local', 'custom', 'https://llm.example/v1', 'chat-1') "
+                           "RETURNING id").fetchone()["id"]
+        c.commit()
+    assert client.get("/api/accounts", headers=admin).status_code == 200
+    listed = client.get("/api/ask/accounts", headers=approver)
+    assert listed.status_code == 200
+    assert listed.json()["accounts"][0] == {"id": new_id, "name": "local", "chat_model": "chat-1"}    # no URL, no key details
+    assert set(listed.json()["vault"]) == {"initialized", "unlocked"}
+    assert client.get("/api/accounts", headers=approver).status_code == 403                # the full listing stays admin-only
+    assert client.post("/api/accounts", headers={**approver, **CSRF}, json={}).status_code == 403
+    assert client.delete("/api/accounts/1", headers={**approver, **CSRF}).status_code == 403
+    # /api/ask is open to approvers and closed to viewers
+    monkeypatch.setattr(api.asker, "answer", lambda conn, q, cfg, limit: {"answer": "ok", "sources": []})
+    monkeypatch.setattr(api.accounts, "chat_config_for", lambda conn, ref: None)
+    asked = client.post("/api/ask", headers={**approver, **CSRF}, json={"question": "How many vacation days?", "account": str(new_id)})
+    assert asked.status_code == 200 and asked.json()["answer"] == "ok"
+    assert client.post("/api/ask", headers={**viewer, **CSRF}, json={"question": "How many vacation days?", "account": "env"}).status_code == 403
+    assert client.get("/api/ask/accounts", headers=viewer).status_code == 403
+    # a read-only service (MCP, search) has no ask permission either
+    assert client.get("/api/ask/accounts", headers=access(sub="kb-bot", sub_type="service", scope="trustdesk.kb.read")).status_code == 403
+
+
+def test_document_upload_and_delete_need_kb_write(client):
+    approver, viewer = access(roles=["trustdesk:approver"]), access(sub="usr_2", roles=["trustdesk:viewer"])
+    admin = access(sub="usr_3", roles=["trustdesk:admin"])
+    files = {"file": ("leave.md", b"# Leave\n\nEmployees get 25 days of leave.\n")}
+    for who in (approver, viewer):
+        assert client.post("/api/documents", headers={**who, **CSRF}, files=files).status_code == 403
+        assert client.delete("/api/documents/1", headers={**who, **CSRF}).status_code == 403
+    up = client.post("/api/documents", headers={**admin, **CSRF}, files=files)
+    assert up.status_code == 200, up.text
+    doc_id = client.get("/api/documents", headers=admin).json()[0]["id"]
+    assert client.get("/api/documents", headers=approver).status_code == 200               # reading is open to kb:read
+    assert client.delete(f"/api/documents/{doc_id}", headers={**approver, **CSRF}).status_code == 403
+    assert client.delete(f"/api/documents/{doc_id}", headers={**admin, **CSRF}).json() == {"deleted": doc_id}

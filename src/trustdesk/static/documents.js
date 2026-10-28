@@ -1,4 +1,5 @@
 import { api, ApiError } from "/kit/api.js";
+import { can } from "/kit/session.js";
 import { $, confirmDialog, fmtDate, h, toast } from "/kit/ui.js";
 
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -6,6 +7,10 @@ const OK_EXT = /\.(md|markdown|txt|pdf)$/i;
 let wired = false;
 
 export async function initDocuments() {
+  // Reading is for everyone with kb:read; uploading and deleting need kb:write, loading the demo policies needs settings:manage.
+  const writer = can("kb:write");
+  for (const el of [$("dropzone"), $("doc-type").closest(".field"), $("uploads")]) el.hidden = !writer;
+  $("load-demo").hidden = !can("settings:manage");
   if (!wired) {
     wired = true;
     const dz = $("dropzone");
@@ -40,7 +45,7 @@ async function load() {
       h("td", { class: "col-added" }, fmtDate(d.created_at)),
       h("td", { class: "actions" }, h("div", { class: "btns" },
         h("button", { class: "secondary small", type: "button", onclick: () => view(d.id) }, "View"),
-        h("button", { class: "danger small", type: "button", onclick: () => remove(d) }, "Delete"))))));
+        can("kb:write") ? h("button", { class: "danger small", type: "button", onclick: () => remove(d) }, "Delete") : null)))));
     $("doc-table").hidden = docs.length === 0;
     $("doc-empty").hidden = docs.length !== 0;
     $("doc-detail").hidden = true;

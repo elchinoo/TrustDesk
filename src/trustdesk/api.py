@@ -5,12 +5,13 @@ import time
 from pathlib import Path
 
 import psycopg
+from apgkit import insights
 from apgkit.auth.rp import safe_return_to
 from apgkit.config import env_bool
 from apgkit.guard import SecurityGuard
 from apgkit.web import is_https, mount_kit_static, public_url
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -20,6 +21,7 @@ from . import (
     api_v1,
     core,
     embedcfg,
+    live,
     metrics,
     reembed_job,
     seedpack,
@@ -95,12 +97,15 @@ async def lifespan(_: FastAPI):
     _startup_tasks()
     backlog = asyncio.create_task(_backlog_loop())
     seed_retry = asyncio.create_task(_seed_retry_loop())
+    listener = live.Listener(lambda: connect(retries=1))       # one LISTEN connection for all browsers (see live.py)
+    listener.start()
     try:
         async with mcp_app.router.lifespan_context(mcp_app):
             yield
     finally:
         backlog.cancel()
         seed_retry.cancel()
+        listener.stop()
 
 
 # --- authentication ---------------------------------------------------------------------------------------
@@ -208,6 +213,23 @@ def prometheus_metrics():
     return Response(body, media_type=ctype)
 
 
+@app.get("/api/insights", dependencies=[Depends(require("settings:manage"))])
+def database_insights(order: str = Query("total", max_length=10), limit: int = Query(20, ge=1, le=100)):
+    """What EDB's extensions know about the workload (top statements, tuner, advisor). Each part says `available: false` with a
+    reason where the database lacks the extension or the privilege. Statement text reveals the workload: admin only."""
+    order = order if order in ("total", "mean", "calls") else "total"
+    with connect(retries=1) as conn:
+        return insights.insights_payload(conn, order, limit)
+
+
+@app.get("/api/requests/events", dependencies=[Depends(require("requests:read"))])
+async def request_events(request: Request):
+    """Server-Sent Events: `changed` whenever a request row changes (Postgres tcn), `hello {live}` first. The browser then re-reads the
+    list through the normal API; without tcn `live` is false and the page keeps polling."""
+    return StreamingResponse(live.stream(is_disconnected=request.is_disconnected), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "version": __version__}
@@ -231,7 +253,7 @@ def search(q: str = Query(min_length=1, max_length=MAX_QUERY), limit: int = Quer
         return {"query": q, "results": hybrid_search(q, limit=limit, doc_type=doc_type)}
 
 
-@app.post("/api/documents", dependencies=[Depends(require("full")), Depends(idle)])
+@app.post("/api/documents", dependencies=[Depends(require("kb:write")), Depends(idle)])
 async def upload_document(file: UploadFile = File(...), doc_type: str = Query("policy", pattern="^[a-z][a-z0-9_-]{0,29}$")):
     data = await file.read(MAX_UPLOAD + 1)  # bounded read: never buffer more than the limit
     if len(data) > MAX_UPLOAD:
@@ -270,7 +292,7 @@ def get_document(doc_id: int):
     return doc
 
 
-@app.delete("/api/documents/{doc_id}", dependencies=[Depends(require("full"))])
+@app.delete("/api/documents/{doc_id}", dependencies=[Depends(require("kb:write"))])
 def delete_document(doc_id: int):
     with connect() as conn:
         row = conn.execute("DELETE FROM kb_document WHERE id=%s RETURNING id", (doc_id,)).fetchone()
@@ -561,6 +583,18 @@ def list_accounts():
                 "vault": vault.status(conn), "active_embedding": accounts.active_embedding_ref(conn)}
 
 
+@app.get("/api/ask/accounts", dependencies=[Depends(require("ask"))])
+def ask_accounts():
+    """What the Ask tab needs and nothing more: the accounts that have a chat model (name and model, no URL, no key
+    details) and whether the vault is locked. People who may ask but not manage settings (approvers) use this instead of
+    the admin-only /api/accounts."""
+    with connect() as conn:
+        listed = [*([accounts.env_account()] if accounts.env_account() else []), *accounts.list_accounts(conn)]
+        v = vault.status(conn)
+    return {"accounts": [{"id": a["id"], "name": a["name"], "chat_model": a["chat_model"]} for a in listed if a["chat_model"]],
+            "vault": {"initialized": v["initialized"], "unlocked": v["unlocked"]}}
+
+
 @app.post("/api/accounts", dependencies=[Depends(require("full"))])
 def create_account(body: AccountBody):
     with _translate(), connect() as conn:
@@ -641,7 +675,7 @@ def activate_embeddings(body: ActivateBody):
     return {"started": True, "message": "re-embedding started"}
 
 
-@app.post("/api/ask", dependencies=[Depends(require("full")), Depends(idle)])
+@app.post("/api/ask", dependencies=[Depends(require("ask")), Depends(idle)])
 def ask_question(body: AskBody):
     with _translate(), connect_vector() as conn:
         cfg = accounts.chat_config_for(conn, _ref(body.account))

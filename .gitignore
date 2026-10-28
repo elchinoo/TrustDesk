@@ -11,3 +11,6 @@ dist/
 api_key
 *.key
 *.pem
+
+docs/video/out/
+docs/video/node_modules

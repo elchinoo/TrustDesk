@@ -4,6 +4,8 @@ from datetime import date
 
 import psycopg
 
+from . import textsearch
+
 EMPLOYEE_NO = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
 EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s]{2,}$")
 COLUMNS = ("employee_no, name, email, department, title, level, country, hire_date, status, created_at, updated_at")
@@ -142,9 +144,9 @@ def listing(conn, *, query: str | None, status: str | None, limit: int, offset: 
         where.append("e.status=%s")
         args.append(status)
     if query:
-        where.append("(e.name ILIKE %s OR e.email ILIKE %s OR e.employee_no ILIKE %s OR e.department ILIKE %s)")
-        like = "%" + re.sub(r"([\\%_])", r"\\\1", query) + "%"
-        args += [like] * 4
+        cond, found = textsearch.ilike_any(conn, ["e.name", "e.email", "e.employee_no", "e.department"], query)
+        where.append(cond)
+        args += found
     clause = " AND ".join(where)
     total = conn.execute(f"SELECT count(*) AS n FROM employee e WHERE {clause}", args).fetchone()["n"]
     rows = conn.execute(

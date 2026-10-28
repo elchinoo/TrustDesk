@@ -4,7 +4,7 @@ Results always carry provenance (document, version, heading, per-signal ranks) s
 """
 from pgvector import Vector
 
-from . import embedcfg
+from . import embedcfg, textsearch
 from .db import connect_vector
 from .embeddings import embed
 from .migrate import column_dim
@@ -15,7 +15,7 @@ _SQL = """
 WITH vec AS (
     __VEC__
 ), tq AS (  -- OR semantics: questions are long, passages short; ranking favours more matching terms
-    SELECT replace(plainto_tsquery('english', %(q)s)::text, '&', '|')::tsquery AS q
+    SELECT replace(plainto_tsquery(%(cfg)s::regconfig, %(q)s)::text, '&', '|')::tsquery AS q
 ), lex AS (
     SELECT c.id, row_number() OVER (ORDER BY ts_rank_cd(c.tsv, tq.q) DESC) AS rnk
     FROM kb_chunk c JOIN kb_document d ON d.id = c.doc_id CROSS JOIN tq
@@ -52,7 +52,7 @@ def hybrid_search(query: str, *, org_id: str = "default", doc_type: str | None =
     conn = conn or connect_vector()
     try:
         embedcfg.ensure_loaded(conn)
-        params = {"q": query, "org": org_id, "doc_type": doc_type, "k": candidates, "rrf": RRF_K, "limit": limit}
+        params = {"cfg": textsearch.fts_config(conn), "q": query, "org": org_id, "doc_type": doc_type, "k": candidates, "rrf": RRF_K, "limit": limit}
         have = column_dim(conn)
         if have is None or have == embedcfg.current().dim:
             params["qv"] = Vector(embed([query])[0])

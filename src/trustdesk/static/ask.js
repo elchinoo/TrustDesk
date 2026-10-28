@@ -25,8 +25,8 @@ async function loadAccounts() {
   const select = $("ask-account");
   const note = $("ask-note");
   try {
-    const d = await api("/api/accounts");
-    const usable = [...(d.env ? [d.env] : []), ...d.accounts].filter((a) => a.chat_model);   // the environment account is the default
+    const d = await api("/api/ask/accounts");   // narrow list (name and model): approvers may ask but cannot open Settings
+    const usable = d.accounts;   // the environment account comes first and is the default
     select.replaceChildren(...usable.map((a) => h("option", { value: String(a.id) }, `${a.name} · ${a.chat_model}`)));
     const want = remembered();
     if (usable.some((a) => String(a.id) === want)) select.value = want;

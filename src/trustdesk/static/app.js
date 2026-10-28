@@ -1,17 +1,18 @@
 import { api } from "/kit/api.js";
+import { initInsights } from "/kit/insights.js";
 import { initAsk } from "/static/ask.js";
 import { initConnect } from "/static/connect.js";
 import { initDocuments } from "/static/documents.js";
 import { initEmployees } from "/static/employees.js";
 import { initReports } from "/static/reports.js";
-import { initRequests } from "/static/requests.js";
+import { initRequests, stopLive } from "/static/requests.js";
 import { initSearch } from "/static/search.js";
 import { initSettings } from "/static/settings.js";
 import { bootSession, can, refreshSession, renderLogin, renderSetup, renderVaultBanner, state } from "/kit/session.js";
 import { $, h, scrollRegion } from "/kit/ui.js";
 
-const TABS = ["requests", "employees", "reports", "documents", "search", "ask", "settings", "connect"];
-const INIT = { requests: initRequests, employees: initEmployees, reports: initReports, search: initSearch, ask: initAsk, documents: initDocuments, settings: initSettings, connect: initConnect };
+const TABS = ["requests", "employees", "reports", "documents", "search", "ask", "settings", "connect", "insights"];
+const INIT = { requests: initRequests, employees: initEmployees, reports: initReports, search: initSearch, ask: initAsk, documents: initDocuments, settings: initSettings, connect: initConnect, insights: () => initInsights($("view-insights"), api) };
 const SECTIONS = ["auth-card", "vault-banner", "nav", "signout", ...TABS.map((t) => "view-" + t)];
 
 // Earlier versions kept the API key in sessionStorage. Nothing writes it any more; remove any leftover.
@@ -21,7 +22,7 @@ try { sessionStorage.removeItem("trustdesk.key"); } catch { /* storage unavailab
 for (const [id, label] of [["req-table", "Requests"], ["emp-table", "Employees"], ["doc-table", "Documents"]]) scrollRegion($(id).parentElement, label);
 for (const [i, pre] of [...document.querySelectorAll("pre.code")].entries()) scrollRegion(pre, `Code example ${i + 1}`);
 
-function hideAll() { for (const id of SECTIONS) $(id).hidden = true; }
+function hideAll() { stopLive(); for (const id of SECTIONS) $(id).hidden = true; }
 
 async function boot(notice = "") {
   hideAll();
@@ -35,7 +36,7 @@ async function boot(notice = "") {
   } });
 }
 
-const NEEDS = { requests: "requests:read", employees: "requests:read", reports: "reports:read", documents: "kb:read", search: "kb:read", ask: "ask", settings: "settings:manage", connect: "mcp:use" };
+const NEEDS = { requests: "requests:read", employees: "requests:read", reports: "reports:read", documents: "kb:read", search: "kb:read", ask: "ask", settings: "settings:manage", connect: "mcp:use", insights: "settings:manage" };
 
 function showApp() {
   $("auth-card").hidden = true;
@@ -53,6 +54,7 @@ function route() {
   const tab = allowed.includes(want) ? want : (allowed[0] || "requests");
   for (const t of TABS) $("view-" + t).hidden = t !== tab;
   for (const a of document.querySelectorAll("#nav a")) a.classList.toggle("active", a.dataset.tab === tab);
+  if (tab !== "requests") stopLive();       // the live stream holds one of the browser's few connections per site
   INIT[tab]();
 }
 

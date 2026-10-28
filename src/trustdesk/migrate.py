@@ -9,17 +9,24 @@ MIGRATIONS = Path(__file__).resolve().parent / "migrations"
 
 
 def run() -> list[str]:
-    """Apply the SQL migrations. The shared tables (settings, sessions, API tokens, OIDC state) come from the kit."""
+    """Apply the SQL migrations. The shared tables (settings, sessions, API tokens, OIDC state) come from the kit.
+
+    After them the read-only role's access is (re)applied (hardening.py): masked views for personal data, secrets hidden."""
     from apgkit import migrate as kit_migrate
     from apgkit.auth.schema import SQL as AUTH_SQL
 
     from .core import db
 
-    applied = kit_migrate.run(db, MIGRATIONS, extensions=("vector",), replacements={"{{EMBEDDING_DIM}}": str(get_settings().embedding_dim)})
-    with db.connect() as conn:      # after the app's own migrations: it upgrades tables they created (sessions) and adds the OIDC state
+    def kit_tables(conn) -> None:    # after the app's own migrations: it upgrades tables they created (sessions) and adds the OIDC state
         conn.execute(AUTH_SQL)
         conn.commit()
-    return applied
+
+    def harden(conn) -> None:         # last, so tables the kit just created are covered too
+        from .hardening import apply
+        apply(conn)
+
+    return kit_migrate.run(db, MIGRATIONS, extensions=("vector",), replacements={"{{EMBEDDING_DIM}}": str(get_settings().embedding_dim)},
+                           after_migrate=[kit_tables, harden])
 
 
 MAX_HNSW_DIM = 2000  # pgvector's limit for HNSW/IVFFlat indexes on the `vector` type

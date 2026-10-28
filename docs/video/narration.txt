@@ -1,0 +1,166 @@
+## 1 af_heart
+Every company has rules.
+
+How much vacation you get. What a customer dinner may cost. Who approves a trip.
+
+And every day, people ask for things.
+
+...
+
+TrustDesk is a workspace where those requests meet your rules. An AI reads your own policy documents, and gives advice.
+
+But the advice is only advice. A person always makes the decision.
+
+## 2 af_heart
+First start. There are no key files to copy, and no default password.
+
+The server prints a one-time code in its log.
+
+Whoever holds that code creates the administrator password, right here in the browser.
+
+That is a deliberate choice. Until someone completes this step, every page of the application refuses to answer.
+
+...
+
+The password needs at least twelve characters.
+
+Now we are in. And the workspace is empty.
+
+## 3 am_michael
+Now, some data to work with. We load a fictional company called Acme.
+
+One click adds sixteen policy documents, eleven employees, and a mix of good and problematic requests.
+
+[pause 3.0]
+
+Here they are. Each one was sent to the AI, in the background.
+
+For each one, the system finds the policy passages that fit, and asks the model for a first opinion.
+
+That is all the model does. It reads, and it advises. It never decides.
+
+Look at the advice column.
+
+[pause 1.5]
+
+Every request now has a first opinion.
+
+...
+
+The policies live here. Markdown, text, or PDF.
+
+Open one, and you see the passages it was split into.
+
+They are stored in Postgres, with one index for meaning, and one for exact words. Both live in the same database as everything else.
+
+The model that does the checking is chosen in Settings.
+
+It sees the request text and the policy passages. Names, e-mail addresses, and employee numbers never leave.
+
+## 4 af_sarah
+Now the AI advice. Open the request called Lunch with auditor, again.
+
+This is the review window. The advice is on the right.
+
+Before the model says anything, the system computes facts by itself. Working days, notice given, overlaps, and possible duplicates.
+
+A model is poor at counting days. So we do not ask it to.
+
+Here, the system noticed that this lunch is identical to another one.
+
+...
+
+Below that, the reasons. Each reason points to a passage of your policy, with a quotation.
+
+TrustDesk checks that the quotation really appears in the passage, word for word.
+
+If it does not, the quote is marked as unverified.
+
+And a yes or a no with no rule behind it is downgraded to needs more information.
+
+On the left, the history. Who did what, and when.
+
+The advice is a first reading. It saves the approver the search for the rule. It does not replace the judgment.
+
+## 5 af_sarah
+Now the human part. This request has advice to reject.
+
+The approver disagrees. Watch what happens if they simply press Approve.
+
+[pause 1.5]
+
+TrustDesk asks for a written reason. At least ten characters, because going against the advice has to be explained.
+
+So the approver writes one, and approves again.
+
+[pause 1.5]
+
+The decision is recorded under the approver's own name, together with what the AI had recommended at that moment.
+
+Rejecting a request, or asking for more information, needs a note too. The employee will read it.
+
+Nothing is hidden. The decision, its reason, and the advice it overruled stay together.
+
+## 6 am_eric
+Now, the reports. Managers and auditors want the overall picture.
+
+So there are nine reports. Volumes and outcomes. Expenses by department. Who is away next month.
+
+...
+
+This one matters most. Every decision that went against the advice, with its justification.
+
+It answers the first question an auditor will ask. When people disagreed with the tool, did they say why?
+
+Any report can be printed, or downloaded as a spreadsheet. Let's download this one.
+
+[pause 2.0]
+
+Done.
+
+## 7 am_eric
+Where do requests come from? From your own applications.
+
+Say, an HR portal. It starts by creating an employee, through a small web API.
+
+[pause 1.5]
+
+Then it sends a request. A key in the call makes a repeat safe, so there are no duplicates.
+
+[pause 2.0]
+
+Back in the app, the request is already in the queue.
+
+Now one last call, to read it back.
+
+[pause 1.5]
+
+The application sees the status. But the advice field is not there.
+
+The token that sends requests can never read the advice, or decide. Only people can.
+
+## 8 af_heart
+Now, searching the rules. The documents can be searched in plain language.
+
+[pause 1.5]
+
+Every result shows where it came from. The document, the heading, and the version.
+
+Assistants such as Claude Code or Cursor can search them too, through a read-only MCP connection.
+
+MCP is a standard way for an assistant to use a tool.
+
+The Connect tab has the setup, with this server's address already filled in.
+
+## 9 af_heart
+To recap. Load your rules. Let your applications send requests.
+
+TrustDesk adds facts, finds the rules, and offers advice with quoted evidence.
+
+A person decides. Every override is explained, and reported.
+
+Everything lives in one Postgres database.
+
+...
+
+To try it, start from the README. Then open the guide in the docs folder.
