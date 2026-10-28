@@ -3,7 +3,7 @@
  * (no unix socket, a free port, a database whose name ends in `test`), the demo stand-in model, and TrustDesk itself.
  * Nothing here reads a real environment: the app gets an explicit environment and a private working directory.
  */
-import { ChildProcess, execFileSync, spawn } from 'node:child_process';
+import { ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
@@ -62,6 +62,8 @@ function pgBin(): string {
 
 export interface Cluster {
   url: string;
+  /** Runs psql as `user` (default postgres) and returns its text output (errors included, the exit code is ignored). */
+  psql(db: string, sql: string, user?: string): string;
   stop(): void;
 }
 
@@ -104,11 +106,20 @@ export async function startCluster(dbName: string): Promise<Cluster> {
     }, 30_000);
     psql('postgres', `CREATE DATABASE ${dbName} ENCODING 'UTF8' TEMPLATE template0`);
     for (const ext of ['vector', 'pg_trgm']) psql(dbName, `CREATE EXTENSION IF NOT EXISTS ${ext}`);
+    // What AgentPG gives an instance: the read-only group role a1p_readonly (and its default SELECT on new tables) and a login
+    // user in it, like the one `agentpg db-users create --permission read` makes. The kit's masking is applied to it at migrate.
+    psql(dbName, `CREATE ROLE a1p_readonly NOLOGIN; CREATE ROLE ai_reader LOGIN IN ROLE a1p_readonly;
+      GRANT CONNECT ON DATABASE ${dbName} TO a1p_readonly; GRANT USAGE ON SCHEMA public TO a1p_readonly;
+      ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON TABLES TO a1p_readonly;`);
   } catch (e) {
     stop();
     throw e;
   }
-  return { url: `postgresql://postgres@127.0.0.1:${port}/${dbName}`, stop };
+  const run = (db: string, sql: string, user = 'postgres') => {
+    const r = spawnSync(path.join(bin, 'psql'), ['-X', '-h', '127.0.0.1', '-p', String(port), '-U', user, '-d', db, '-c', sql], { env, encoding: 'utf8' });
+    return (r.stdout ?? '') + (r.stderr ?? '');
+  };
+  return { url: `postgresql://postgres@127.0.0.1:${port}/${dbName}`, psql: run, stop };
 }
 
 export interface Running {
@@ -164,6 +175,7 @@ function launch(cmd: string, args: string[], env: Record<string, string>, cwd: s
 
 export interface Stack {
   url: string;
+  cluster: Cluster;
   setupCode: string;
   /** Everything the server printed (it holds the one-time setup code: show it only on screen, never keep it). */
   serverLog(): string;
@@ -195,6 +207,7 @@ export async function startStack(): Promise<Stack> {
     const code = await waitFor('the setup code', () => app!.logs().match(/^[ \t]{2,}([A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})[ \t]*$/m)?.[1], 20_000);
     return {
       url: app.url,
+      cluster,
       setupCode: code,
       serverLog: () => app!.logs(),
       async stop() {

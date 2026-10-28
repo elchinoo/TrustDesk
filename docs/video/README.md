@@ -30,9 +30,10 @@ What it does:
 5. It stops with an error if any scene is shorter than its narration + 0.7 s.
 
 Voices: the header `## <scene id> <voice>` gives the voice of a scene; it changes with the topic (never inside a scene, never the
-same voice in two consecutive topics, male and female alternating, one accent: US). TrustDesk: scenes 1-2 af_heart (intro and
-setup), scene 3 am_michael (the demo data), scenes 4-5 af_sarah (the advice and the decision), scenes 6-7 am_eric (reports and
-the client API), scenes 8-9 af_heart (search, MCP, recap). Each topic starts with a sentence that orients the listener.
+same voice in two consecutive topics, male and female alternating, one accent: US, never af_nicole). TrustDesk: 1 am_michael (the
+problem, scaffolding vs platform), 2 af_heart (the rules loaded), 3 am_eric (a compliant request), 4 af_sarah (a non-compliant request
+and the verified quotes), 5 am_adam (search), 6 af_bella (live status), 7 am_eric (database insights), 8 af_heart (masking), 9 am_michael
+(landing).
 
 Writing narration: one `## <scene id> <voice>` section per scene; short sentences, one idea each; a blank line is a pause, `...` a short
 beat, `[pause 1.5]` a deliberate long pause where something happens on screen that the viewer should watch (do not talk over a
@@ -46,5 +47,15 @@ Playwright's own ffmpeg build is not required: when `ffmpeg-<rev>` is missing fr
 creates a private `PLAYWRIGHT_BROWSERS_PATH` under `--work` (links to the installed browsers plus a wrapper that runs the
 system `ffmpeg`). Nothing is downloaded. Needs: macOS, `ffmpeg`, Node 22+, Google Chrome, `npm install` in this folder, and the Kokoro tool folder with its own `.venv` and models (`videos/tts`).
 
-The terminal scenes (2 and 7) are drawn as terminal pages in the same recording, with the real server log and real API
-answers. The setup code visible in scene 2 belongs to the throwaway server and is already used up when the video ends.
+Not live from this laptop, and labelled as such on screen: the architecture diagram (scene 1: sample app / reference scaffolding /
+platform), the real screenshots captured on the live AgentPG fleet (scenes 4 and 7; files in `videos/live-captures/`, because
+`edb_stat_monitor`, `edb_pg_tuner` and `query_advisor` do not exist on a local Postgres), the terminal of scene 8 (real `psql` output of
+the read-only user `ai_reader` on the local database; the recorder creates `a1p_readonly` and `ai_reader` before the migrations so
+the kit's masking is applied) and the live-status counter of scene 6 (an illustration of the AgentPG polling fallback). Everything
+else is the real app: requests typed in the New request dialog, the stand-in model's advice (`MULTI` entries in
+`scripts/fake_llm.py` for the two requests of scenes 3 and 4), search, `unaccent`, live updates through `tcn`.
+
+Settings: the clock of the recording starts at the first card (the admin password, the client token and the employee José Álvarez
+are created before it and cut away). `build.py` finds that card in the webm with `signalstats` (the key is named
+`lavfi.signalstats.YAVG` in ffmpeg 8). Scene length = LEAD 0.2 s + narration + TAIL 0.5 s. Use `TD_PORT_RANGE=47100-47199` (or any free
+high range) when ports are shared with other work; the recorder only ever stops processes it started.

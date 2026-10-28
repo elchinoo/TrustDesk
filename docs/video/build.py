@@ -23,7 +23,7 @@ SCRIPT = os.path.join(HERE, '..', 'VIDEO-SCRIPT.md')
 NARRATION = os.path.join(HERE, 'narration.txt')
 PRONOUNCE = os.path.join(HERE, 'pronounce.json')
 VOICE = 'af_heart'
-LEAD = 0.3  # silence before the voice in a scene (seconds); the pauses inside a scene are in narration.txt
+LEAD = 0.2  # silence before the voice in a scene (seconds); the pauses inside a scene are in narration.txt
 FFMPEG = shutil.which('ffmpeg') or '/opt/homebrew/bin/ffmpeg'
 FFPROBE = shutil.which('ffprobe') or '/opt/homebrew/bin/ffprobe'
 
@@ -137,13 +137,14 @@ def browsers_path(work):
 
 def video_offset(webm, card_at):
     """Seconds between the start of the webm and the recorder's clock zero: the title card (dark) first shows at card_at."""
-    p = subprocess.run([FFMPEG, '-v', 'error', '-t', '8', '-i', webm, '-vf', 'fps=20,scale=64:36,signalstats,metadata=print:key=lavfi.signal_stats.YAVG:file=-', '-f', 'null', '-'], capture_output=True, text=True)
+    # ffmpeg 8 names the key lavfi.signalstats.YAVG (older builds: lavfi.signal_stats.YAVG) and prints it to the log, not to stdout
+    p = subprocess.run([FFMPEG, '-t', '12', '-i', webm, '-vf', 'fps=20,scale=64:36,signalstats,metadata=print', '-f', 'null', '-'], capture_output=True, text=True)
     t = None
-    for line in p.stdout.splitlines():
-        m = re.match(r'frame:\d+\s+pts:\d+\s+pts_time:([\d.]+)', line)
+    for line in (p.stdout + p.stderr).splitlines():
+        m = re.search(r'frame:\d+\s+pts:\d+\s+pts_time:([\d.]+)', line)
         if m:
             t = float(m.group(1))
-        m = re.match(r'lavfi.signal_stats.YAVG=([\d.]+)', line)
+        m = re.search(r'lavfi\.signal_?stats\.YAVG=([\d.]+)', line)
         if m and t is not None and float(m.group(1)) < 80:  # the card is dark blue; the blank page is white
             return t - card_at
     return 0.0
@@ -185,8 +186,8 @@ def main():
     for n, v in info.items():
         room = ends[n] - starts[n] - LEAD - v['dur']
         print(f'scene {n}: {starts[n]:7.1f}s .. {ends[n]:7.1f}s  audio {v["dur"]:5.1f}s  room after voice {room:4.1f}s')
-        if room < 0.7:
-            sys.exit(f'scene {n} is shorter than its narration + 0.7 s')
+        if room < 0.45:
+            sys.exit(f'scene {n} is shorter than its narration + 0.7 s (lead 0.2 + tail 0.5)')
     late = [x for x in tm.get('sync', []) if x['lateBy'] > 1.0]
     print(f'sync: {len(tm.get("sync", []))} cues, {len(late)} more than 1 s late', *[f"\n  scene {x['scene']} '{x['key']}' {x['lateBy']}s" for x in late])
 

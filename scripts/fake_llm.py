@@ -96,6 +96,22 @@ VERDICTS = {
                        ("Adoptive parents receive the same leave as birth parents",), ["The adoption placement papers."]),
 }
 
+# Requests typed on camera in the video (docs/video/record.spec.ts): title -> (recommendation, compliance, summary, [(reason, keywords of the
+# rule's sentence)], what is missing). Several reasons, each quoting its own passage. A reason whose rule was not retrieved is left out.
+MULTI = {
+    "Mountain long weekend": ("approve", "compliant",
+                              "Three working days of vacation with plenty of notice. The notice is long enough and the manager can approve it alone, so approval is advised.",
+                              [("A vacation of up to 5 working days needs at least 7 calendar days of notice, and this request gives much more.", ("up to 5 working days needs at least 7 calendar days",)),
+                               ("The direct manager approves vacations of up to 10 working days, so no higher approval is needed.", ("The direct manager approves vacations of up to 10 working days",))],
+                              []),
+    "Three weeks at the coast": ("reject", "non_compliant",
+                                 "Fifteen working days of vacation starting in two days. The notice is far shorter than the policy asks for, and a vacation this long needs Director approval, so rejection is advised.",
+                                 [("A vacation of more than 10 working days needs at least 30 calendar days of notice, and this request gives 2 days.", ("more than 10 working days needs at least 30 calendar days",)),
+                                  ("Vacations of 11 to 15 working days need Director approval, so the manager cannot approve this alone.", ("Vacations of 11 to 15 working days need Director approval",)),
+                                  ("The Finance blackout period does not apply here: the employee works in Marketing, not in Finance.", ("Employees in the Finance department may not take vacation",))],
+                                 []),
+}
+
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _WORD = re.compile(r"[a-z0-9]+")
 _STOP = {"the", "a", "an", "of", "to", "and", "or", "in", "is", "are", "for", "on", "at", "by", "how", "what", "do", "does", "we", "our", "can", "i", "my", "it"}
@@ -141,6 +157,18 @@ def verdict_for(prompt: str) -> dict:
         title = json.loads(m.group(1)).get("title", "") if m else ""
     except ValueError:
         title = ""
+    multi = MULTI.get(title)
+    if multi:
+        rec, comp, summary, reason_specs, missing = multi
+        reasons, citations = [], []
+        for text, keywords in reason_specs:
+            hit = next((h for h in (find_sentence(passages, k) for k in keywords) if h), None)
+            if hit:
+                reasons.append({"text": text, "passages": [hit[0]]})
+                citations.append({"passage": hit[0], "quote": hit[1]})
+        if citations:
+            return {"recommendation": rec, "compliance": comp, "summary": summary, "reasons": reasons,
+                    "citations": citations, "missing_information": missing}
     known = VERDICTS.get(title)
     if known:
         rec, comp, summary, reason, keywords, missing = known

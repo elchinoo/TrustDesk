@@ -1,6 +1,19 @@
 {
-  "README": "read me",
-  "CSV": "C S V",
-  "HR": "H R",
-  "Acme": "Ack-me"
+ "README": "read me",
+ "CSV": "C S V",
+ "HR": "H R",
+ "Acme": "Ack-me",
+ "EDB": "E D B",
+ "tcn": "T C N",
+ "José": "Ho-zay",
+ "jose": "ho-zay",
+ "TrustDesk": "Trust Desk",
+ "e-mails": "emails",
+ "AgentPG": "agent P G",
+ "DB": "D B",
+ "pg_trgm": "P G trigram",
+ "Encyption": "en sip shun",
+ "alvares": "al vah res",
+ "Álvarez": "al vah rez",
+ "VP": "V P"
 }
