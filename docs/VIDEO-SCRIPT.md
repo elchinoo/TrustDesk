@@ -70,7 +70,7 @@ Scene length = audio + 0.7 s (0.2 s lead, 0.5 s tail). Every on-screen action st
 | scene 3 | 0:57 to 1:27 | am_eric | 29.5 s |
 | scene 4 | 1:27 to 2:25 | af_heart | 57.1 s |
 | scene 5 | 2:25 to 3:01 | am_liam | 35.2 s |
-| scene 6 | 3:01 to 3:29 | af_heart | 27.6 s |
+| scene 6 | 3:01 to 3:29 | af_heart | 27.7 s |
 | scene 7 | 3:29 to 4:05 | am_eric | 34.9 s |
 | scene 8 | 4:05 to 4:32 | af_heart | 26.3 s |
 | scene 9 | 4:32 to 5:03 | am_liam | 30.4 s |
