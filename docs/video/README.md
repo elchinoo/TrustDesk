@@ -30,10 +30,11 @@ What it does:
 5. It stops with an error if any scene is shorter than its narration + 0.7 s.
 
 Voices: the header `## <scene id> <voice>` gives the voice of a scene; it changes with the topic (never inside a scene, never the
-same voice in two consecutive topics, male and female alternating, one accent: US, never af_nicole). TrustDesk: 1 am_michael (the
-problem, scaffolding vs platform), 2 af_heart (the rules loaded), 3 am_eric (a compliant request), 4 af_sarah (a non-compliant request
-and the verified quotes), 5 am_adam (search), 6 af_bella (live status), 7 am_eric (database insights), 8 af_heart (masking), 9 am_michael
-(landing).
+same voice in two consecutive topics, male and female alternating, one accent: US, never af_nicole). Only three voices are used: am_liam,
+af_heart, am_eric, at speech speed 1.08 (the default of `narrate.py`; respellings of acronyms for the voice live in `pronounce.json`).
+TrustDesk: 1 am_liam (the problem, scaffolding vs platform), 2 af_heart (the rules loaded), 3 am_eric (a compliant request), 4 af_heart (a
+non-compliant request and the verified quotes), 5 am_liam (search), 6 af_heart (live status), 7 am_eric (database insights), 8 af_heart
+(masking), 9 am_liam (landing).
 
 Writing narration: one `## <scene id> <voice>` section per scene; short sentences, one idea each; a blank line is a pause, `...` a short
 beat, `[pause 1.5]` a deliberate long pause where something happens on screen that the viewer should watch (do not talk over a

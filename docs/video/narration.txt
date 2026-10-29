@@ -1,4 +1,4 @@
-## 1 am_michael
+## 1 am_liam
 I am an approver with a stack of employee requests and a two hundred page policy handbook.
 
 I need answers from our policies that I can trust.
@@ -39,7 +39,7 @@ Under each one, a green line. Quote found word for word in the document.
 
 Open the full passage, and the sentence is right there.
 
-## 4 af_sarah
+## 4 af_heart
 Now a request that breaks the rules. José asks for fifteen working days, starting in two days.
 
 [pause 1.5]
@@ -62,7 +62,7 @@ This is a real rejection, captured on the twenty eighth of October. Two days of 
 
 Same green line, on the live database.
 
-## 5 am_adam
+## 5 am_liam
 Now, finding things. Search the policies in plain language.
 
 Each result shows its ranks. One from the vector, one from the exact words.
@@ -77,7 +77,7 @@ A real embedding model ranks better. This demo embedder only matches words, so t
 
 Names work too. Type alvares, with a typo and no accent, and it finds José Álvarez.
 
-## 6 af_bella
+## 6 af_heart
 Status is live. An application, here an HR portal, sends a request.
 
 It appears in my list. I did not refresh.
@@ -114,7 +114,7 @@ The masking lives in the database, not in the app.
 
 One finding for the platform team. A new database user on AgentPG re-opens the grants. So the app closes them again, every five minutes.
 
-## 9 am_michael
+## 9 am_liam
 So, can I trust the answer?
 
 I saw each reason quoted, and each quote checked against the database. I saw search forgive typos, and status update live. And an AI user that cannot see names.

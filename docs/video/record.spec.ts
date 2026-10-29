@@ -371,9 +371,7 @@ test('TrustDesk, answers from policies you can trust', async ({ page, context, b
     await page.locator('#nr-emp').selectOption({ label: 'José Álvarez (E2001)' });
     await page.locator('#nr-type').selectOption('vacation');
     const body = page.locator('#newreq-body');
-    await body.getByLabel('Title').click();
-    await body.getByLabel('Title').pressSequentially(title, { delay: 10 });
-    await body.getByLabel('Description').click();
+    await body.getByLabel('Title').pressSequentially(title, { delay: 10 }); // pressSequentially focuses the field itself: no extra click (each action costs the 400 ms slowMo)
     await body.getByLabel('Description').pressSequentially(description, { delay: 5 });
     await body.getByLabel('From').fill(from);
     await body.getByLabel('To').fill(to);
@@ -406,7 +404,7 @@ test('TrustDesk, answers from policies you can trust', async ({ page, context, b
   await page.locator('#review-close').click();
   const s4 = weekday(2);
   await submit('Three weeks at the coast', 'Three weeks at the coast, leaving soon.', isoOf(s4), isoOf(endAfter(s4, 15)));
-  await at(page, 'Suggests rejection', 3.4); // pauses are shorter now (0.75 s) and the model takes ~1 s: click earlier so the verdict is up when the sentence starts
+  await at(page, 'Suggests rejection', 4.8); // the model takes ~1 s and the form typing a while: click earlier so the verdict is up when the sentence starts (was 1.25 s late at 3.4)
   await page.locator('#newreq').getByRole('button', { name: 'Submit request' }).click();
   await expect(page.locator('#review')).toHaveAttribute('open', '');
   await expect(page.locator('#review-body')).toContainText('AI pre-validation', { timeout: 60_000 });
@@ -601,11 +599,10 @@ test('TrustDesk, answers from policies you can trust', async ({ page, context, b
   await callout(page, 'Quote found word for word in the document', '#review-body .ok-text', 0, 3.5);
   await at(page, 'I saw each reason', 0.2);
   await callout(page, 'Every quote checked against the database', '#review-body .ok-text', 1, 4);
-  await at(page, 'I saw search forgive', 0.2);
+  await at(page, 'I saw search forgive', 0.6);
   await page.locator('#review-close').click();
   await page.locator('a[data-tab="search"]').click();
-  await page.locator('#q').fill('');
-  await type('#q', 'vacation notice', 15);
+  await page.locator('#q').fill('vacation notice'); // one action: scene 9 only flashes the search page
   await page.locator('#q').press('Enter');
   await at(page, 'and status update live', 0.2);
   await page.locator('a[data-tab="requests"]').click();
