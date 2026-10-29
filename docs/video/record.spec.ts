@@ -372,9 +372,9 @@ test('TrustDesk, answers from policies you can trust', async ({ page, context, b
     await page.locator('#nr-type').selectOption('vacation');
     const body = page.locator('#newreq-body');
     await body.getByLabel('Title').click();
-    await body.getByLabel('Title').pressSequentially(title, { delay: 22 });
+    await body.getByLabel('Title').pressSequentially(title, { delay: 10 });
     await body.getByLabel('Description').click();
-    await body.getByLabel('Description').pressSequentially(description, { delay: 12 });
+    await body.getByLabel('Description').pressSequentially(description, { delay: 5 });
     await body.getByLabel('From').fill(from);
     await body.getByLabel('To').fill(to);
   };
@@ -406,7 +406,7 @@ test('TrustDesk, answers from policies you can trust', async ({ page, context, b
   await page.locator('#review-close').click();
   const s4 = weekday(2);
   await submit('Three weeks at the coast', 'Three weeks at the coast, leaving soon.', isoOf(s4), isoOf(endAfter(s4, 15)));
-  await at(page, 'Suggests rejection', 2.2); // the click lands as the pause before "Suggests rejection" starts
+  await at(page, 'Suggests rejection', 3.4); // pauses are shorter now (0.75 s) and the model takes ~1 s: click earlier so the verdict is up when the sentence starts
   await page.locator('#newreq').getByRole('button', { name: 'Submit request' }).click();
   await expect(page.locator('#review')).toHaveAttribute('open', '');
   await expect(page.locator('#review-body')).toContainText('AI pre-validation', { timeout: 60_000 });
