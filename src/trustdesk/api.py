@@ -1,13 +1,13 @@
 import asyncio
 import contextlib
+import logging
 import sys
 import time
 from pathlib import Path
 
 import psycopg
 from apgkit import insights, masking
-from apgkit.auth.rp import safe_return_to
-from apgkit.config import env_bool
+from apgkit.auth.rp import BINDING_COOKIE, clear_binding, safe_return_to
 from apgkit.guard import SecurityGuard
 from apgkit.web import is_https, mount_kit_static, public_url
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
@@ -41,11 +41,12 @@ from .migrate import NeedsReembedding, embedding_state
 from .netguard import UnsafeURL
 from .search import hybrid_search
 
+log = logging.getLogger("trustdesk")
 STATIC = Path(__file__).resolve().parent / "static"
 MAX_UPLOAD = 10 * 1024 * 1024
 MAX_QUERY = 500
 
-mcp_app = mcp.streamable_http_app(streamable_http_path="/", host="0.0.0.0")
+mcp_app = mcp.streamable_http_app(streamable_http_path="/", host="0.0.0.0")  # transport-level DNS-rebinding checks stay off; McpGuard authenticates every /mcp request
 
 
 _announced = False
@@ -384,7 +385,7 @@ def session_state(request: Request):
             if not _auto_unlock_tried:
                 _auto_unlock_tried = True
                 vault.try_unlock_with_platform_secret(conn)
-            setup = local.needs_setup(conn) and not env_bool("TRUSTDESK_ALLOW_ANONYMOUS") and not fed.enabled
+            setup = local.needs_setup(conn) and not auth.anonymous_allowed() and not fed.enabled
             v = vault.status(conn)
             has_password = local.admin_configured(conn)
     except HTTPException:
@@ -410,12 +411,14 @@ def sso_login(request: Request, next: str | None = None):
         raise HTTPException(404, "single sign-on is not configured")
     try:
         with connect(retries=1) as conn:
-            url = fed.rp.begin(conn, public_url(request, core.public_url_env) + "/auth/callback", next)
+            login = fed.rp.start(conn, public_url(request, core.public_url_env) + "/auth/callback", next)
     except psycopg.Error as exc:
         raise _db_unavailable() from exc
     except Exception:  # noqa: BLE001 - the identity provider may be unreachable
         return RedirectResponse("/?sso_error=the identity provider is unavailable", status_code=303)
-    return RedirectResponse(url, status_code=303)
+    resp = RedirectResponse(login.url, status_code=303)
+    login.bind(resp, secure=is_https(request))      # ties the callback to this browser: a callback without the cookie is refused
+    return resp
 
 
 @app.get("/auth/callback")
@@ -427,9 +430,11 @@ def sso_callback(request: Request, code: str = "", state: str = "", error: str =
     from apgkit.auth import TokenError
     try:
         with connect(retries=1) as conn:
-            claims, back, id_token = fed.rp.finish(conn, public_url(request, core.public_url_env) + "/auth/callback", code, state)
+            claims, back, id_token = fed.rp.finish(conn, public_url(request, core.public_url_env) + "/auth/callback", code, state,
+                                                        request.cookies.get(BINDING_COOKIE))
             roles = [r for r in claims.get("roles", []) if isinstance(r, str)]
             resp = RedirectResponse(safe_return_to(back), status_code=303)
+            clear_binding(resp, secure=is_https(request))
             principal_roles = core.APP_AUTH.permissions_for(roles=roles)
             if not principal_roles:
                 return RedirectResponse("/?sso_error=your account has no role in TrustDesk; ask an administrator", status_code=303)
@@ -437,7 +442,9 @@ def sso_callback(request: Request, code: str = "", state: str = "", error: str =
                            roles=roles, source="oidc", id_token_hint=id_token)
             return resp
     except TokenError as exc:
-        return RedirectResponse("/?sso_error=" + str(exc)[:120], status_code=303)
+        err = RedirectResponse("/?sso_error=" + str(exc)[:120], status_code=303)
+        clear_binding(err, secure=is_https(request))
+        return err
 
 
 @app.post("/api/setup")
@@ -460,17 +467,24 @@ def setup(body: SetupBody, request: Request, response: Response):
 
 @app.post("/api/login")
 def login(body: LoginBody, request: Request, response: Response):
-    client = _guard_attempts(request)
+    client = auth.client(request)
     try:
         with connect(retries=1) as conn:
             ok = False
             if body.password is not None:
-                ok = local.login_password(conn, body.password)
-            elif body.api_key is not None and local.static_key_matches(body.api_key):
-                ok = True
-                vault.try_unlock_with_platform_secret(conn)
+                # counts the attempt before hashing (429 over the limit, 503 when every scrypt slot is busy) and costs one scrypt
+                ok = local.login_password(conn, body.password, client=client, limiter=auth.limiter)
+            else:
+                if auth.limiter.limited(client):
+                    raise HTTPException(429, "too many failed attempts; wait a minute")
+                if body.api_key is not None and local.static_key_matches(body.api_key):
+                    ok = True
+                    vault.try_unlock_with_platform_secret(conn)
+                elif body.api_key is not None:
+                    auth.limiter.record(client)
             if not ok:
-                auth.limiter.record(client)
+                if body.password is None and body.api_key is None:
+                    auth.limiter.record(client)
                 raise HTTPException(401, "invalid credentials")
             _start_session(conn, request, response)
     except (psycopg.Error, RuntimeError) as exc:
@@ -504,6 +518,34 @@ def unlock_vault(body: UnlockBody, request: Request):
             raise HTTPException(403, "wrong password")  # 403, not 401: the session itself is still valid
         conn.commit()
     return {"ok": True}
+
+
+class RotateBody(BaseModel):
+    password: str = Field(max_length=256)
+    confirm: bool = False
+
+
+@app.post("/api/vault/rotate-key", dependencies=[Depends(require("full")), Depends(idle)])
+def rotate_vault_key(body: RotateBody, request: Request):
+    """Replace the vault's data key and re-encrypt every stored provider key under it. Needs a full-scope credential, the admin
+    password and `confirm: true`. Every other replica must be restarted afterwards (it still holds the old key in memory)."""
+    client = _guard_attempts(request)
+    if not body.confirm:
+        raise HTTPException(422, "set confirm to true to rotate the data key")
+    with connect() as conn:
+        if not vault.is_initialized(conn):
+            raise HTTPException(409, "no provider keys are stored yet; set an admin password first")
+        if not vault.is_unlocked():
+            raise HTTPException(423, "the vault is locked; unlock it first")
+        conn.rollback()                                  # rotate_data_key needs an idle connection (the checks above opened a transaction)
+        try:
+            counts = vault.rotate_data_key(conn, password=body.password)
+        except vault.VaultError as exc:
+            auth.limiter.record(client)
+            raise HTTPException(403, str(exc)) from exc
+    log.warning("vault data key rotated by %s; re-encrypted %s; restart the other replicas", client,
+                counts)
+    return {"ok": True, "reencrypted": counts, "restart_other_replicas": True}
 
 
 @app.post("/api/admin-password", dependencies=[Depends(require("full"))])

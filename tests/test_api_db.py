@@ -9,13 +9,13 @@ if not os.environ.get("TEST_DATABASE_URL"):
 from trustdesk import migrate  # noqa: E402
 from trustdesk.db import connect  # noqa: E402
 
-AUTH = {"Authorization": "Bearer k"}
+AUTH = {"Authorization": "Bearer test-static-key-0123456789-abcdefghij-xyz"}
 
 
 @pytest.fixture(autouse=True)
 def _db(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
-    monkeypatch.setenv("TRUSTDESK_API_KEY", "k")
+    monkeypatch.setenv("TRUSTDESK_API_KEY", "test-static-key-0123456789-abcdefghij-xyz")
     with connect() as c:
         c.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
         c.commit()

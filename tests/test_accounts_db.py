@@ -284,3 +284,71 @@ def test_prompt_injection_in_a_document_stays_data(admin):
     assert "Ignore all previous instructions" in user  # present, but only inside a delimited passage block
     assert user.index("<passage>") < user.index("Ignore all previous") < user.rindex("</passage>")
     assert embedcfg.current() is not None
+
+
+# ---- vault contexts, legacy tokens and rotation ----------------------------------------------------
+def _legacy_token(plain: str) -> str:
+    """A token as kit 0.3.x wrote it: Fernet under a key derived from the data key (no context)."""
+    import base64
+
+    from cryptography.fernet import Fernet
+    return Fernet(base64.urlsafe_b64encode(vault._v._data_key)).encrypt(plain.encode()).decode()
+
+
+def test_keys_are_bound_to_their_row_and_the_store_is_registered(admin):
+    a = new_account(admin).json()["id"]
+    b = new_account(admin, name="second").json()["id"]
+    assert "llm_account.api_key_enc" in core.vault.stores()
+    with connect() as c:
+        rows = {r["id"]: r["api_key_enc"] for r in c.execute("SELECT id, api_key_enc FROM llm_account")}
+    assert rows[a].startswith("v2$") and vault.decrypt(rows[a], vault.llm_key_context(a)) == PROVIDER_KEY
+    with pytest.raises(vault.VaultError):
+        vault.decrypt(rows[a], vault.llm_key_context(b))                        # copied into another row: refused
+    with pytest.raises(vault.VaultError):
+        vault.decrypt(rows[a])                                                  # and without any context
+    with connect() as c:                                                        # a ciphertext moved to another row fails to be used
+        c.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (rows[a], b))
+        c.commit()
+    assert admin.post(f"/api/accounts/{b}/test", json={"target": "chat"}, headers=H).json().get("ok") is not True
+
+
+def test_a_legacy_key_is_read_and_resealed_with_its_context(admin):
+    acct = new_account(admin).json()["id"]
+    legacy = _legacy_token(PROVIDER_KEY)
+    with connect() as c:
+        c.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (legacy, acct))
+        c.commit()
+    assert admin.post(f"/api/accounts/{acct}/test", json={"target": "chat"}, headers=H).json()["ok"] is True   # old row works
+    with connect() as c:
+        enc = c.execute("SELECT api_key_enc FROM llm_account WHERE id=%s", (acct,)).fetchone()["api_key_enc"]
+    assert enc.startswith("v2$") and vault.decrypt(enc, vault.llm_key_context(acct)) == PROVIDER_KEY            # new row format
+    assert admin.post(f"/api/accounts/{acct}/test", json={"target": "chat"}, headers=H).json()["ok"] is True
+
+
+def test_rotating_the_data_key_reencrypts_every_stored_key(admin):
+    ids = [new_account(admin, name=f"a{i}").json()["id"] for i in range(2)]
+    with connect() as c:
+        c.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (_legacy_token(PROVIDER_KEY), ids[1]))
+        c.commit()
+        before = {r["id"]: r["api_key_enc"] for r in c.execute("SELECT id, api_key_enc FROM llm_account")}
+    assert admin.post("/api/vault/rotate-key", json={"password": PASSWORD}, headers=H).status_code == 422       # needs confirm
+    assert admin.post("/api/vault/rotate-key", json={"password": "wrong-password-xx", "confirm": True}, headers=H).status_code == 403
+    r = admin.post("/api/vault/rotate-key", json={"password": PASSWORD, "confirm": True}, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["reencrypted"] == {"llm_account.api_key_enc": 2}
+    with connect() as c:
+        after = {r["id"]: r["api_key_enc"] for r in c.execute("SELECT id, api_key_enc FROM llm_account")}
+    for i in ids:
+        assert after[i] != before[i] and after[i].startswith("v2$")
+        assert vault.decrypt(after[i], vault.llm_key_context(i)) == PROVIDER_KEY
+    for i in ids:
+        assert admin.post(f"/api/accounts/{i}/test", json={"target": "chat"}, headers=H).json()["ok"] is True
+    vault.lock()                                                                                                 # and after a restart
+    with connect() as c:
+        assert vault.unlock_with_password(c, PASSWORD)
+        assert vault.decrypt(after[ids[0]], vault.llm_key_context(ids[0])) == PROVIDER_KEY
+
+
+def test_rotation_needs_a_full_credential(admin, client):
+    client.cookies.clear()
+    assert client.post("/api/vault/rotate-key", json={"password": PASSWORD, "confirm": True}, headers=H).status_code == 401

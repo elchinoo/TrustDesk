@@ -12,7 +12,7 @@ from trustdesk.db import connect, connect_vector  # noqa: E402
 from trustdesk.embeddings import EmbeddingError  # noqa: E402
 
 SEED = Path(__file__).resolve().parents[1] / "src" / "trustdesk" / "seed" / "acme"
-AUTH = {"Authorization": "Bearer k"}
+AUTH = {"Authorization": "Bearer test-static-key-0123456789-abcdefghij-xyz"}
 
 
 class Counter:
@@ -39,7 +39,7 @@ def provider(monkeypatch):
 @pytest.fixture
 def db768(monkeypatch, client):
     monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
-    monkeypatch.setenv("TRUSTDESK_API_KEY", "k")
+    monkeypatch.setenv("TRUSTDESK_API_KEY", "test-static-key-0123456789-abcdefghij-xyz")
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.setenv("EMBEDDING_DIM", "768")
     with connect() as c:

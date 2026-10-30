@@ -41,7 +41,7 @@ set -a; . ./.env; set +a
 .venv/bin/trustdesk serve         # http://localhost:8000
 ```
 
-`pyproject.toml` takes the shared kit (`agentpg-kit`) from the same release tag the Docker image installs (`v0.2.5`), so no sibling checkout is needed. If you are also changing the kit, install your checkout over it: `uv pip install -e ../agentpg-kit` (or `make kit-local`).
+`pyproject.toml` takes the shared kit (`agentpg-kit`) from the same release tag the Docker image installs (`v0.4.0`), so no sibling checkout is needed. If you are also changing the kit, install your checkout over it: `uv pip install -e ../agentpg-kit` (or `make kit-local`).
 
 The first time the server starts it prints a **one-time setup code** to its console:
 
@@ -432,12 +432,14 @@ TrustDesk exposes Prometheus metrics at `/metrics` with the same names PagerLens
 | Variable | Default | Meaning |
 |---|---|---|
 | `DATABASE_URL` / `DB_EXTERNAL_DSN` / `PSQL_CONNECTION_STRING` | `PG*` variables | Postgres URI; first one set wins. If none is set, libpq uses `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`. The `vector` and `pg_trgm` extensions must exist (or the role must be allowed to create them). |
-| `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address. |
+| `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address (`TRUSTDESK_HOST` overrides `HOST`). The app uses the same value to decide whether `TRUSTDESK_ALLOW_ANONYMOUS` may apply. |
+| `TRUSTDESK_FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxy addresses (comma-separated, CIDRs allowed) whose `X-Forwarded-*` headers uvicorn trusts. Never `*`. |
+| `TRUSTDESK_TRUSTED_HOPS` | `1` | How many reverse proxies sit in front of the app; the client address used for rate limiting is that entry of `X-Forwarded-For` counted from the right. `0` uses the socket address. |
 | `AUTO_SEED` | `false` | With `trustdesk start`, load the demo pack if the knowledge base is empty. The vault is opened from `TRUSTDESK_ENCRYPTION_KEY` first (the seed embeds through the configured account); if the seed still has to be skipped (vault locked, provider down) it is retried in the background once the app is serving, not at the next restart. |
 | `TRUSTDESK_ENCRYPTION_KEY` | none | Optional platform-managed secret that lets the vault unlock itself after a restart (file alternative: `/etc/trustdesk/encryption_key`). |
 | `TRUSTDESK_ALLOW_PRIVATE_LLM_URLS` | `false` | Allow provider URLs on loopback/private networks, for a local model server. Link-local is always blocked. |
-| `TRUSTDESK_API_KEY` | none | Optional static full-access credential for automation (file alternative: `/etc/trustdesk/api_key`). Prefer API tokens. |
-| `TRUSTDESK_ALLOW_ANONYMOUS` | `false` | `true` disables authentication entirely. Throwaway local demos only. |
+| `TRUSTDESK_API_KEY` | none | Optional static full-access credential for automation (file alternative: `/etc/trustdesk/api_key`). Must be at least 32 characters (for example `openssl rand -base64 36`); a shorter key is refused and an error is logged. A warning is logged at startup while one is enabled. Prefer API tokens. |
+| `TRUSTDESK_ALLOW_ANONYMOUS` | `false` | `true` disables authentication entirely, but only when the bind address is loopback (`HOST=127.0.0.1`) or `TRUSTDESK_ALLOW_ANONYMOUS_PUBLIC=1` is also set. Throwaway local demos only. |
 | `LLM_BASE_URL`, `LLM_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `LLM_CHAT_MODEL`, `EMBEDDING_SEND_DIMENSIONS` | | Optional environment provider; see [Environment configuration](#environment-configuration-optional). |
 
 ## Container image

@@ -41,7 +41,7 @@ def provider(monkeypatch):
 @pytest.fixture(autouse=True)
 def _db(monkeypatch, client):
     monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
-    monkeypatch.setenv("TRUSTDESK_API_KEY", "k")
+    monkeypatch.setenv("TRUSTDESK_API_KEY", "test-static-key-0123456789-abcdefghij-xyz")
     for v in ("LLM_BASE_URL", "TRUSTDESK_OIDC_ISSUER"):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("TRUSTDESK_ENCRYPTION_KEY", PLATFORM)
@@ -63,8 +63,10 @@ def stored_embedding_account(base_url="https://gw.example/v1", model="emb-1"):
     with connect() as c:
         vault.initialize(c, PASSWORD)
         row = c.execute("INSERT INTO llm_account (name, provider, base_url, api_key_enc, api_key_last4, embedding_model, "
-                        "embedding_dim) VALUES ('gw','custom',%s,%s,'cret',%s,768) RETURNING id",
-                        (base_url, vault.encrypt("sk-stored-secret"), model)).fetchone()
+                        "embedding_dim) VALUES ('gw','custom',%s,NULL,'cret',%s,768) RETURNING id",
+                        (base_url, model)).fetchone()
+        c.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s",
+                  (vault.encrypt("sk-stored-secret", vault.llm_key_context(row["id"])), row["id"]))
         store.put(c, embedcfg.SETTING, str(row["id"]))
         c.commit()
     vault.lock()

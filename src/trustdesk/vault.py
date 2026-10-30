@@ -1,7 +1,8 @@
 """Envelope encryption for stored provider keys. The implementation lives in agentpg-kit; this module keeps the old function API
 (`vault.encrypt(...)`) bound to this app's single vault."""
-from apgkit.vault import VaultError, VaultLocked  # noqa: F401
+from apgkit.vault import VaultError, VaultLocked, is_legacy_token  # noqa: F401
 
+from .core import LLM_KEY_CONTEXT
 from .core import vault as _v
 
 is_initialized = _v.is_initialized
@@ -15,6 +16,13 @@ change_password = _v.change_password
 reset = _v.reset
 encrypt = _v.encrypt
 decrypt = _v.decrypt
+rotate_data_key = _v.rotate_data_key
+rencrypt = _v.reencrypt_legacy
+
+
+def llm_key_context(account_id: int) -> str:
+    """The context every `llm_account.api_key_enc` value is encrypted and decrypted with."""
+    return LLM_KEY_CONTEXT.format(id=account_id)
 
 
 def auto_unlock(conn) -> bool:

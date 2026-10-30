@@ -45,9 +45,10 @@ class ChatConfig:
     label: str
     key_plain: str = ""
     key_enc: str | None = None
+    key_context: str = ""
 
     def api_key(self) -> str:
-        return vault.decrypt(self.key_enc) if self.key_enc else self.key_plain
+        return vault.decrypt(self.key_enc, self.key_context) if self.key_enc else self.key_plain
 
 
 _PUBLIC = ("id, name, provider, base_url, (api_key_enc IS NOT NULL) AS has_key, api_key_last4, chat_model, "
@@ -92,19 +93,21 @@ def create(conn, *, name: str, provider: str, base_url: str, api_key: str | None
     if provider not in PROVIDER_IDS:
         raise AccountError("unknown provider")
     base_url = check_url(base_url)
-    enc = last4 = None
+    key = None
     if _clean(api_key):
         _require_vault(conn)
         key = api_key.strip()
-        enc, last4 = vault.encrypt(key), key[-4:]
     exists = conn.execute("SELECT 1 FROM llm_account WHERE lower(name)=lower(%s)", (name,)).fetchone()
     if exists:
         raise AccountError("an account with that name already exists")
     row = conn.execute(
         "INSERT INTO llm_account (name, provider, base_url, api_key_enc, api_key_last4, chat_model, embedding_model, "
-        "embedding_dim) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-        (name, provider, base_url, enc, last4, _clean(chat_model), _clean(embedding_model), embedding_dim),
+        "embedding_dim) VALUES (%s,%s,%s,NULL,NULL,%s,%s,%s) RETURNING id",
+        (name, provider, base_url, _clean(chat_model), _clean(embedding_model), embedding_dim),
     ).fetchone()
+    if key:  # the context names the row, so the key is sealed once the row has its id (same transaction)
+        conn.execute("UPDATE llm_account SET api_key_enc=%s, api_key_last4=%s WHERE id=%s",
+                     (vault.encrypt(key, vault.llm_key_context(row["id"])), key[-4:], row["id"]))
     conn.commit()
     return row["id"]
 
@@ -125,7 +128,7 @@ def update(conn, account_id: int, *, name: str, provider: str, base_url: str, ap
         _require_vault(conn)
         key = api_key.strip()
         sets += ["api_key_enc=%s", "api_key_last4=%s"]
-        args += [vault.encrypt(key), key[-4:]]
+        args += [vault.encrypt(key, vault.llm_key_context(account_id)), key[-4:]]
     elif clear_key:
         sets += ["api_key_enc=NULL", "api_key_last4=NULL"]
     conn.execute(f"UPDATE llm_account SET {', '.join(sets)} WHERE id=%s", (*args, account_id))
@@ -147,6 +150,18 @@ def _raw(conn, account_id: int) -> dict:
     row = conn.execute("SELECT * FROM llm_account WHERE id=%s", (account_id,)).fetchone()
     if not row:
         raise AccountError("account not found")
+    return _upgrade_legacy(conn, row)
+
+
+def _upgrade_legacy(conn, row: dict) -> dict:
+    """Read-through migration: a key written before contexts existed (legacy token) is re-sealed bound to its row the first time it
+    is read with the vault open. A v2 token, a locked vault or a row without a key is left alone."""
+    enc = row.get("api_key_enc")
+    if enc and vault.is_legacy_token(enc) and vault.is_unlocked():
+        new = vault.rencrypt(enc, vault.llm_key_context(row["id"]))
+        conn.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s AND api_key_enc=%s", (new, row["id"], enc))
+        conn.commit()
+        row = {**row, "api_key_enc": new}
     return row
 
 
@@ -157,7 +172,8 @@ def embedding_config_for(conn, account_id: int) -> embedcfg.EmbeddingConfig:
     s = get_settings()
     return embedcfg.EmbeddingConfig(
         base_url=row["base_url"], model=row["embedding_model"], dim=row["embedding_dim"] or DEFAULT_DIM,
-        send_dimensions=s.send_dimensions, trusted=False, account_id=account_id, key_enc=row["api_key_enc"])
+        send_dimensions=s.send_dimensions, trusted=False, account_id=account_id, key_enc=row["api_key_enc"],
+        key_context=vault.llm_key_context(account_id))
 
 
 def chat_config_for(conn, ref: int | str) -> ChatConfig:
@@ -171,7 +187,7 @@ def chat_config_for(conn, ref: int | str) -> ChatConfig:
     if not row["chat_model"]:
         raise AccountError("this account has no chat model configured")
     return ChatConfig(base_url=row["base_url"], model=row["chat_model"], trusted=False, label=row["name"],
-                      key_enc=row["api_key_enc"])
+                      key_enc=row["api_key_enc"], key_context=vault.llm_key_context(row["id"]))
 
 
 def active_embedding_ref(conn) -> int | str | None:

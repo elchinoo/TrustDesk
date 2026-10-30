@@ -79,7 +79,11 @@ def _serve() -> None:
 
     import uvicorn
 
-    uvicorn.run("trustdesk.api:app", host=os.environ.get("HOST", "0.0.0.0"), port=int(os.environ.get("PORT", "8000")))
+    from .core import BIND_HOST
+
+    # Forwarded headers are honoured only from the reverse proxy (default: the local one), never from any caller (never "*").
+    uvicorn.run("trustdesk.api:app", host=BIND_HOST, port=int(os.environ.get("PORT", "8000")), proxy_headers=True,
+                forwarded_allow_ips=os.environ.get("TRUSTDESK_FORWARDED_ALLOW_IPS", "127.0.0.1"))
 
 
 def _start() -> int:

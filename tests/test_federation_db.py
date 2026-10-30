@@ -160,6 +160,20 @@ def test_single_sign_on_login_creates_a_role_bound_session(client):
     assert client.get("/api/v1/requests").status_code == 401
 
 
+def test_sso_callback_without_the_binding_cookie_is_refused(client):
+    r = client.get("/auth/login", follow_redirects=False)
+    assert "apg_oidc_bind" in r.headers["set-cookie"] and "HttpOnly" in r.headers["set-cookie"]
+    q = parse_qs(urlsplit(r.headers["location"]).query)
+    client.provider.nonce = q["nonce"][0]
+    client.cookies.delete("apg_oidc_bind")                                   # a browser that did not start this login
+    cb = client.get("/auth/callback", params={"code": "c", "state": q["state"][0]}, follow_redirects=False)
+    assert cb.headers["location"].startswith("/?sso_error=") and "td_session" not in cb.cookies
+    assert client.get("/api/v1/requests").status_code == 401
+    client.cookies.set("apg_oidc_bind", "x" * 43)                            # the state was burnt, and a wrong cookie fails too
+    again = client.get("/auth/callback", params={"code": "c", "state": q["state"][0]}, follow_redirects=False)
+    assert again.headers["location"].startswith("/?sso_error=")
+
+
 def test_sso_refuses_people_without_a_role_here_and_replayed_or_foreign_logins(client):
     client.provider.id_claims = {"sub": "usr_9", "name": "Nobody", "roles": ["otherapp:admin"]}
     r = client.get("/auth/login", follow_redirects=False)

@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-  "agentpg-kit>=0.3.1",
+  "agentpg-kit>=0.4.0",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "psycopg[binary,pool]>=3.2",
@@ -46,9 +46,9 @@ ignore = ["B008", "B905", "E501"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402"]
 
-# The shared kit comes from the same release the Dockerfile installs (tag v0.3.1), so a plain `uv pip install -e ".[dev]"` works
+# The shared kit comes from the same release the Dockerfile installs (tag v0.4.0), so a plain `uv pip install -e ".[dev]"` works
 # without any sibling checkout. To work on the kit at the same time, install your checkout over it afterwards:
 #   uv pip install -e ../agentpg-kit     (or: make kit-local)
 # When you raise the minimum in `dependencies`, raise this tag and the KIT_URL in the Dockerfile together.
 [tool.uv.sources]
-agentpg-kit = { git = "https://github.com/elchinoo/agentpg-kit", tag = "v0.3.1" }
+agentpg-kit = { git = "https://github.com/elchinoo/agentpg-kit", tag = "v0.4.0" }

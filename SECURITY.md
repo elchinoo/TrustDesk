@@ -34,10 +34,21 @@ affected version or commit.
 - Failed sign-ins and bad credentials are rate limited (10 per minute per client address, in memory, per
   process). Behind a reverse proxy all clients can share one address, so add proxy-level limits too.
 - With no credential configured the app **denies everything**. Anonymous access exists only behind the explicit
-  opt-in `TRUSTDESK_ALLOW_ANONYMOUS=true`; never use it on a reachable host.
+  opt-in `TRUSTDESK_ALLOW_ANONYMOUS=true`, and is honoured only when the server binds to loopback (`HOST=127.0.0.1`) or
+  `TRUSTDESK_ALLOW_ANONYMOUS_PUBLIC=1` is also set; never use it on a reachable host.
+- A static `TRUSTDESK_API_KEY` must be at least 32 characters; a shorter one is refused.
+- Single sign-on binds each login to the browser that started it (a short-lived `apg_oidc_bind` cookie): a callback
+  without it is refused.
+- The client address used for rate limiting is the `TRUSTDESK_TRUSTED_HOPS`-th entry of `X-Forwarded-For` counted from the
+  right (default 1). The launcher trusts forwarded headers only from `TRUSTDESK_FORWARDED_ALLOW_IPS` (default `127.0.0.1`);
+  expose the app only through your proxy.
+- Admin sign-in counts each attempt before hashing the password and costs one scrypt derivation; when the server is busy
+  hashing it answers 503 with `Retry-After`.
 
 **Provider API keys**
-- Encrypted at rest with Fernet using a random 256-bit data key. The data key is stored only *wrapped*
+- Encrypted at rest (AES-256-GCM, `v2$` tokens) using a random 256-bit data key. Each stored key is bound to its own row
+  (`llm_account.api_key_enc:<id>`), so a ciphertext copied to another row does not decrypt. Keys written by earlier
+  versions are re-sealed the first time they are read with the vault open, or by rotation. The data key is stored only *wrapped*
   (encrypted) under a key derived from the admin password, and optionally under a platform-managed secret
   (`TRUSTDESK_ENCRYPTION_KEY`). A database dump alone reveals no provider key.
 - After a restart the data key is not in memory: the vault is **locked** until the admin enters the password
@@ -45,6 +56,12 @@ affected version or commit.
   return HTTP 423.
 - Keys are never returned by the API (only the last 4 characters), never logged, and removed from provider
   error messages before they are shown.
+- **Rotating the data key.** Re-wrapping (changing the password) keeps the same data key. To replace it, sign in as the
+  administrator and `POST /api/vault/rotate-key` with `{"password": "<admin password>", "confirm": true}`: it re-encrypts every
+  stored provider key under a new key in one transaction and writes a log line without secrets. **Restart every other
+  replica afterwards** (they still hold the old key and cannot decrypt until restarted), and re-issue the provider keys at
+  their source if the old key may have been exposed. All processes of the app must run the same kit version (v0.4.0 or
+  later); an older version cannot read the new tokens.
 - Recovery from a lost password is `trustdesk reset-admin`, which deletes the password, the vault and every stored
   provider key. There is no back door.
 - An attacker with **both** database access and a running, unlocked server process, or with the admin password,

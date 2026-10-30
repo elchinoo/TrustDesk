@@ -1,4 +1,5 @@
 import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 from trustdesk import api, core
@@ -31,12 +32,12 @@ def test_fails_closed_without_credentials(client):
 
 
 def test_wrong_credentials_are_rejected_and_rate_limited(client, monkeypatch):
-    monkeypatch.setenv("TRUSTDESK_API_KEY", "k")
+    monkeypatch.setenv("TRUSTDESK_API_KEY", "test-static-key-0123456789-abcdefghij-xyz")
     bad = {"Authorization": "Bearer bad"}
     codes = [client.get("/api/search", params={"q": "x"}, headers=bad).status_code for _ in range(12)]
     assert codes[:10] == [401] * 10 and codes[10:] == [429, 429]
     # even the right key is refused while the client is locked out
-    assert client.get("/api/search", params={"q": "x"}, headers={"Authorization": "Bearer k"}).status_code == 429
+    assert client.get("/api/search", params={"q": "x"}, headers={"Authorization": "Bearer test-static-key-0123456789-abcdefghij-xyz"}).status_code == 429
 
 
 def test_missing_credentials_do_not_count_towards_lockout(client):
@@ -45,15 +46,48 @@ def test_missing_credentials_do_not_count_towards_lockout(client):
 
 
 def test_static_key_works_and_is_full_scope(monkeypatch):
-    monkeypatch.setenv("TRUSTDESK_API_KEY", "k")
-    p = api.authenticate(_request({"Authorization": "Bearer k"}))
+    monkeypatch.setenv("TRUSTDESK_API_KEY", "test-static-key-0123456789-abcdefghij-xyz")
+    p = api.authenticate(_request({"Authorization": "Bearer test-static-key-0123456789-abcdefghij-xyz"}))
     assert p is not None and p.kind == "static" and p.can("anything:at-all")
 
 
 def test_anonymous_mode_is_explicit_opt_in(monkeypatch):
+    monkeypatch.setattr(core.auth, "bind_host", "127.0.0.1")
     assert api.authenticate(_request()) is None
     monkeypatch.setenv("TRUSTDESK_ALLOW_ANONYMOUS", "true")
     assert api.authenticate(_request()).kind == "anonymous"
+
+
+def test_anonymous_mode_is_refused_on_a_public_bind_address(monkeypatch):
+    monkeypatch.setenv("TRUSTDESK_ALLOW_ANONYMOUS", "true")
+    monkeypatch.delenv("TRUSTDESK_ALLOW_ANONYMOUS_PUBLIC", raising=False)
+    for host in ("0.0.0.0", ""):
+        monkeypatch.setattr(core.auth, "bind_host", host)
+        assert api.authenticate(_request()) is None
+    monkeypatch.setenv("TRUSTDESK_ALLOW_ANONYMOUS_PUBLIC", "1")
+    assert api.authenticate(_request()).kind == "anonymous"
+
+
+def test_a_short_static_key_is_never_accepted(monkeypatch):
+    monkeypatch.setenv("TRUSTDESK_API_KEY", "short-key")
+    with pytest.raises(HTTPException) as e:
+        api.authenticate(_request({"Authorization": "Bearer short-key"}))
+    assert e.value.status_code == 401
+
+
+def test_the_launcher_restricts_forwarded_headers_to_the_local_proxy(monkeypatch):
+    import sys
+    import types
+
+    from trustdesk import cli
+    seen = {}
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=lambda *a, **kw: seen.update(kw)))
+    monkeypatch.delenv("TRUSTDESK_FORWARDED_ALLOW_IPS", raising=False)
+    cli._serve()
+    assert seen["proxy_headers"] is True and seen["forwarded_allow_ips"] == "127.0.0.1"
+    monkeypatch.setenv("TRUSTDESK_FORWARDED_ALLOW_IPS", "10.0.0.0/8")
+    cli._serve()
+    assert seen["forwarded_allow_ips"] == "10.0.0.0/8"
 
 
 def test_browser_writes_need_the_csrf_header(client):
@@ -84,9 +118,9 @@ def test_readyz_does_not_leak_connection_details(client, monkeypatch):
 
 
 def test_upload_size_limit(client, monkeypatch):
-    monkeypatch.setenv("TRUSTDESK_API_KEY", "k")
+    monkeypatch.setenv("TRUSTDESK_API_KEY", "test-static-key-0123456789-abcdefghij-xyz")
     big = b"a" * (api.MAX_UPLOAD + 1)
-    r = client.post("/api/documents", headers={"Authorization": "Bearer k"}, files={"file": ("x.md", big)})
+    r = client.post("/api/documents", headers={"Authorization": "Bearer test-static-key-0123456789-abcdefghij-xyz"}, files={"file": ("x.md", big)})
     assert r.status_code == 413
 
 

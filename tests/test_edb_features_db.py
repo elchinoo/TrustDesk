@@ -33,7 +33,7 @@ from trustdesk.config import get_settings  # noqa: E402
 from trustdesk.db import connect, connect_vector  # noqa: E402
 
 TEST_URL = os.environ["TEST_DATABASE_URL"]
-ADMIN = {"Authorization": "Bearer k"}
+ADMIN = {"Authorization": "Bearer test-static-key-0123456789-abcdefghij-xyz"}
 LOGIN = "td_ro_login"
 
 
@@ -57,7 +57,7 @@ def fresh_schema(default_select_for_readonly: bool = False) -> None:
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", TEST_URL)
-    monkeypatch.setenv("TRUSTDESK_API_KEY", "k")
+    monkeypatch.setenv("TRUSTDESK_API_KEY", "test-static-key-0123456789-abcdefghij-xyz")
 
 
 @pytest.fixture

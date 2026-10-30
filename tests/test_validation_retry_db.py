@@ -16,14 +16,14 @@ from trustdesk.config import get_settings  # noqa: E402
 from trustdesk.db import connect  # noqa: E402
 from trustdesk.llm_http import LLMError  # noqa: E402
 
-ADMIN = {"Authorization": "Bearer k"}
+ADMIN = {"Authorization": "Bearer test-static-key-0123456789-abcdefghij-xyz"}
 CFG = accounts.ChatConfig(base_url="https://llm.invalid/v1", model="fake-1", trusted=True, label="Fake")
 
 
 @pytest.fixture(autouse=True)
 def _db(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
-    monkeypatch.setenv("TRUSTDESK_API_KEY", "k")
+    monkeypatch.setenv("TRUSTDESK_API_KEY", "test-static-key-0123456789-abcdefghij-xyz")
     monkeypatch.delenv("VALIDATE_MAX_ATTEMPTS", raising=False)
     with connect() as c:
         c.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
