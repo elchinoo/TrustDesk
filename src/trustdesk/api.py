@@ -30,6 +30,7 @@ from . import (
     vault,
 )
 from . import ask as asker
+from .bodylimit import BodyLimit
 from .core import COOKIE, CSRF_HEADER, auth, fed, local
 from .db import connect, connect_vector
 from .embeddings import embed as embed_texts
@@ -183,6 +184,7 @@ class McpGuard:
 # Interactive API docs load scripts from a CDN and expose the schema; keep them off.
 app = FastAPI(title="TrustDesk", version=__version__, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(BodyLimit)
 app.add_middleware(McpGuard)
 app.add_middleware(SecurityGuard, csrf_header=CSRF_HEADER, csrf_prefixes=("/api/",), body_prefixes=(), observe=core.metrics.observe)
 app.mount("/mcp", mcp_app)
