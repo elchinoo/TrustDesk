@@ -6,6 +6,10 @@ For HR, travel and expense applications that create employees and send requests.
 
 A client application is trusted to say *which employee* a request is for: TrustDesk does not sign employees in itself. Put your own sign-in in front of it.
 
+**What a client can see.** A client credential reads, corrects and withdraws only the requests it created, and reads and changes only the employees it created (anything else answers 404). A request can still be filed for any active employee. Reading or changing other employees needs an explicit permission: `employees:read` (identity scope `trustdesk.employees.read`) and `employees:write` (`trustdesk.employees.write`), granted on top of the client scope; `full` credentials and signed-in people with `requests:read` are not restricted. Rows that existed before this scoping have no owner and are visible only to those unrestricted callers. An `Idempotency-Key` already used by another client for the same employee answers 409.
+
+**Body size.** JSON bodies are limited to 1 MiB (413 above), whether or not the request declares its length. The document upload (`POST /api/documents`) is the only larger route.
+
 ```bash
 export TD=https://<your-host>
 export TOKEN=<client token>

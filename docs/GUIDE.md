@@ -292,7 +292,7 @@ Every variable below is read in `config.py`, `core.py`, `cli.py`, `api.py`, `emb
 | Upload size | 10 MB per file; PDFs up to 500 pages; text extraction only (no OCR) |
 | Search query | 1 to 500 characters; `limit` 1 to 20 (REST), 1 to 20 (MCP) |
 | Ask question | 3 to 1000 characters; 1 to 10 passages |
-| API request body | 64 KB (413 above) |
+| API request body | 1 MiB (413 above); 11 MiB on the document upload only; `/api/v1` write routes also refuse bodies over 64 KB |
 | Request fields | title 160, description 5 to 4,000, up to 20 `details` fields, text values up to 500 characters, date range up to 366 days, dates 5 years back to 3 years ahead, amount 0 to 10,000,000 with 2 decimals |
 | Passages per validation | up to 10, each cut to 1,500 characters in the prompt; model reply capped at 1,200 tokens |
 | Sessions | 12 hours |
@@ -418,7 +418,7 @@ Where it surfaces: `GET /api/v1/requests/{ref}` (approver credentials) includes 
 | Area | Endpoints | Credentials |
 |---|---|---|
 | Catalogue | `GET /api/v1/request-types` | client, or anyone with `requests:read` |
-| Employees | `POST`, `GET`, `GET /{no}`, `PATCH /{no}` under `/api/v1/employees` | client for writes; client or `requests:read` for reads |
+| Employees | `POST`, `GET`, `GET /{no}`, `PATCH /{no}` under `/api/v1/employees` | client for writes; client or `requests:read` for reads. A client sees and changes only the employees it created, unless it also holds `employees:read` / `employees:write` |
 | Requests (client side) | `POST /requests` (with `Idempotency-Key`), `GET /requests`, `GET /requests/{ref}`, `PUT /requests/{ref}` (only while `needs_info`), `POST /requests/{ref}/withdraw` | client for writes; read with client or `requests:read` (clients get the request without `ai` and `override`, and only public events) |
 | Approver | `POST /requests/{ref}/decision`, `POST /requests/{ref}/validate`, `POST /requests/validate-pending`, `GET /requests/counts` | `requests:decide` (counts: `requests:read`) |
 | Reports | `GET /reports`, `GET /reports/{name}?from=&to=&format=json\|csv` | `reports:read` |
@@ -484,7 +484,7 @@ Route requirements worth knowing: the local admin password login and the static 
 - **Outbound requests:** provider URLs entered in the UI are checked before every call (https, no embedded credentials, no loopback, private, link-local or carrier-grade-NAT addresses unless `TRUSTDESK_ALLOW_PRIVATE_LLM_URLS`; link-local always blocked; redirects never followed; responses size-limited). Limitation: DNS is resolved once for the check and again by the client.
 - **Prompt injection:** employee text and document passages are delimited and flagged as untrusted, the model has no tools, its verdict is strictly parsed and re-checked, and a human decides.
 - **Personal data:** the model never receives names, e-mail addresses or employee numbers, but free text written by an employee can contain personal data. Passages, queries and questions go to the provider you configure. Sensitive requests (sick leave, medical expenses) can be read only by approver sessions, `full`, `client` and the `requests:read` roles; `read` and `metrics` tokens and `/mcp` cannot.
-- **Web hardening:** strict CSP (no inline script or style), `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, `Cache-Control: no-store`, interactive API docs disabled, 64 KB body cap on `/api/v1`, CSV formula neutralisation. Run behind TLS; the app does not terminate it. Failed-credential rate limits are in memory per process, so add proxy-level limits too.
+- **Web hardening:** strict CSP (no inline script or style), `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, `Cache-Control: no-store`, interactive API docs disabled, 1 MiB body cap on every route (the document upload is the one larger bound), 64 KB on `/api/v1` writes, CSV formula neutralisation. Run behind TLS; the app does not terminate it. Failed-credential rate limits are in memory per process, so add proxy-level limits too.
 - **Single tenant:** anyone with full access reads and changes every document and request.
 - **Reporting:** use GitHub private vulnerability reporting, not a public issue.
 

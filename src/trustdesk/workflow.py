@@ -81,7 +81,8 @@ def event(conn, request_id: int, actor: str, action: str, note: str | None = Non
                  (request_id, actor[:60], action, note, Jsonb(data or {})))
 
 
-def create(conn, payload: dict, *, actor: str, source: str = "api", idempotency_key: str | None = None) -> tuple[dict, bool]:
+def create(conn, payload: dict, *, actor: str, source: str = "api", idempotency_key: str | None = None,
+           client_id: str | None = None) -> tuple[dict, bool]:
     """Returns (request, created). The same Idempotency-Key for the same employee returns the original request."""
     emp_no = payload.get("employee_no")
     if not isinstance(emp_no, str):
@@ -97,21 +98,25 @@ def create(conn, payload: dict, *, actor: str, source: str = "api", idempotency_
     try:
         row = conn.execute(
             "INSERT INTO request (employee_id, type, kind, title, description, start_date, end_date, amount, currency, "
-            "details, source, idempotency_key) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            "details, source, idempotency_key, client_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
             (emp["id"], n.type, n.kind, n.title, n.description, n.start_date, n.end_date, n.amount, n.currency,
-             Jsonb(n.details), source, idempotency_key)).fetchone()
+             Jsonb(n.details), source, idempotency_key, client_id)).fetchone()
     except psycopg.errors.UniqueViolation:
         conn.rollback()
-        existing = conn.execute("SELECT id FROM request WHERE employee_id=%s AND idempotency_key=%s",
+        existing = conn.execute("SELECT id, client_id FROM request WHERE employee_id=%s AND idempotency_key=%s",
                                 (emp["id"], idempotency_key)).fetchone()
+        if client_id is not None and existing["client_id"] != client_id:
+            # never hand out another client's request
+            raise Conflict("that Idempotency-Key was already used for this employee; use another") from None
         return get(conn, existing["id"]), False
     event(conn, row["id"], actor, "submitted", data={"source": source})
     conn.commit()
     return get(conn, row["id"]), True
 
 
-def get(conn, request_id: int) -> dict:
-    row = conn.execute(_SELECT + "WHERE r.id=%s", (request_id,)).fetchone()
+def get(conn, request_id: int, client_id: str | None = None) -> dict:
+    """`client_id` limits the lookup to requests that client created (anyone else's is reported as not found)."""
+    row = conn.execute(_SELECT + "WHERE r.id=%s AND (%s::text IS NULL OR r.client_id=%s)", (request_id, client_id, client_id)).fetchone()
     if not row:
         raise NotFound("request not found")
     return _shape(row)
@@ -123,8 +128,11 @@ def events(conn, request_id: int) -> list[dict]:
 
 
 def listing(conn, *, employee_no=None, status=None, type_=None, kind=None, date_from=None, date_to=None,
-            ai=None, search=None, limit=50, offset=0) -> dict:
+            ai=None, search=None, limit=50, offset=0, client_id=None) -> dict:
     where, args = ["true"], []
+    if client_id is not None:
+        where.append("r.client_id = %s")
+        args.append(client_id)
     if employee_no:
         where.append("e.employee_no = %s")
         args.append(employee_no)
@@ -181,8 +189,9 @@ def counts(conn) -> dict:
             "open": sum(by_status.get(s, 0) for s in OPEN), "ai_flagged": flagged}
 
 
-def update(conn, request_id: int, payload: dict, *, actor: str) -> dict:
+def update(conn, request_id: int, payload: dict, *, actor: str, client_id: str | None = None) -> dict:
     """The employee answers an approver's question: fields may change, then the request is validated again."""
+    get(conn, request_id, client_id)          # NotFound for a request that is not the caller's
     cur = conn.execute("SELECT r.status, r.type, e.employee_no FROM request r JOIN employee e ON e.id=r.employee_id "
                        "WHERE r.id=%s", (request_id,)).fetchone()
     if not cur:
@@ -212,7 +221,8 @@ def update(conn, request_id: int, payload: dict, *, actor: str) -> dict:
     return get(conn, request_id)
 
 
-def withdraw(conn, request_id: int, *, actor: str, note: str | None = None) -> dict:
+def withdraw(conn, request_id: int, *, actor: str, note: str | None = None, client_id: str | None = None) -> dict:
+    get(conn, request_id, client_id)          # NotFound for a request that is not the caller's
     row = conn.execute("UPDATE request SET status='withdrawn', updated_at=now() WHERE id=%s AND status = ANY(%s) "
                        "RETURNING id", (request_id, list(OPEN))).fetchone()
     if not row:

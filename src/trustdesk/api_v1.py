@@ -100,6 +100,17 @@ def _actor(p: Principal) -> str:
     return p.actor
 
 
+def _owner(p: Principal) -> str | None:
+    """The client application a request or employee belongs to; None for someone who may see every request (a person, `full`).
+    A credential with only `requests:client` is a client: it reads, corrects and withdraws what IT created."""
+    return None if p.can("requests:read") else f"{p.kind}:{p.subject}"[:120]
+
+
+def _employee_owner(p: Principal) -> str | None:
+    """Same for employees: a client sees only the ones it created unless it holds employees:read."""
+    return None if p.can("requests:read") or p.can("employees:read") else f"{p.kind}:{p.subject}"[:120]
+
+
 @contextlib.contextmanager
 def _errors():
     """Honest HTTP statuses for domain failures. Messages are written to be safe to show."""
@@ -151,26 +162,28 @@ def build_router(require, idle) -> APIRouter:
         return {"types": request_types.catalogue()}
 
     # ---- employees ------------------------------------------------------------------------------
-    @r.post("/employees", status_code=201, dependencies=[write_ok, Depends(small_body)])
-    def create_employee(body: EmployeeBody):
+    @r.post("/employees", status_code=201, dependencies=[Depends(small_body)])
+    def create_employee(body: EmployeeBody, principal: Principal = write_ok):
         with _errors(), connect() as conn:
-            return people.create(conn, body.model_dump())
+            return people.create(conn, body.model_dump(), created_by=_owner(principal))
 
-    @r.get("/employees", dependencies=[read_ok])
-    def list_employees(q: str | None = Query(None, max_length=100), status: str | None = Query(None, max_length=10),
+    @r.get("/employees")
+    def list_employees(principal: Principal = read_ok, q: str | None = Query(None, max_length=100),
+                       status: str | None = Query(None, max_length=10),
                        limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0, le=100000)):
         with connect() as conn:
-            return people.listing(conn, query=q, status=status, limit=limit, offset=offset)
+            return people.listing(conn, query=q, status=status, limit=limit, offset=offset, only_by=_employee_owner(principal))
 
-    @r.get("/employees/{employee_no}", dependencies=[read_ok])
-    def get_employee(employee_no: str):
+    @r.get("/employees/{employee_no}")
+    def get_employee(employee_no: str, principal: Principal = read_ok):
         with _errors(), connect() as conn:
-            return people.get(conn, employee_no)
+            return people.get(conn, employee_no, _employee_owner(principal))
 
-    @r.patch("/employees/{employee_no}", dependencies=[write_ok, Depends(small_body)])
-    def patch_employee(employee_no: str, body: EmployeePatch):
+    @r.patch("/employees/{employee_no}", dependencies=[Depends(small_body)])
+    def patch_employee(employee_no: str, body: EmployeePatch, principal: Principal = write_ok):
+        only_by = None if principal.can("requests:read") or principal.can("employees:write") else _owner(principal)
         with _errors(), connect() as conn:
-            return people.update(conn, employee_no, body.model_dump(exclude_unset=True))
+            return people.update(conn, employee_no, body.model_dump(exclude_unset=True), only_by)
 
     # ---- requests: client side --------------------------------------------------------------------
     @r.post("/requests", status_code=201, dependencies=[Depends(small_body)])
@@ -178,7 +191,7 @@ def build_router(require, idle) -> APIRouter:
                        principal: Principal = write_ok, idempotency_key: str | None = Header(None, max_length=80)):
         with _errors(), connect() as conn:
             req, created = workflow.create(conn, body.model_dump(), actor=_actor(principal), source="api",
-                                           idempotency_key=idempotency_key)
+                                           idempotency_key=idempotency_key, client_id=_owner(principal))
         if created:
             background.add_task(validator.validate, req["id"])
         else:
@@ -195,7 +208,7 @@ def build_router(require, idle) -> APIRouter:
         with connect() as conn:
             out = workflow.listing(conn, employee_no=employee_no, status=status, type_=type, kind=kind,
                                    date_from=date_from, date_to=date_to, ai=ai if principal.can("requests:read") else None,
-                                   search=q, limit=limit, offset=offset)
+                                   search=q, limit=limit, offset=offset, client_id=_owner(principal))
         if not principal.can("requests:read"):
             out["items"] = [_public(i) for i in out["items"]]
         return out
@@ -217,7 +230,7 @@ def build_router(require, idle) -> APIRouter:
     def get_request(ref: str, principal: Principal = read_ok):
         rid = _request_id(ref)
         with _errors(), connect() as conn:
-            req = workflow.get(conn, rid)
+            req = workflow.get(conn, rid, _owner(principal))
             events = workflow.events(conn, rid)
             if not principal.can("requests:read"):
                 events = [{"at": e["at"], "action": e["action"], "note": e["note"]} for e in events
@@ -230,7 +243,7 @@ def build_router(require, idle) -> APIRouter:
     def edit_request(ref: str, body: RequestUpdate, background: BackgroundTasks, principal: Principal = write_ok):
         rid = _request_id(ref)
         with _errors(), connect() as conn:
-            req = workflow.update(conn, rid, body.model_dump(exclude_unset=True), actor=_actor(principal))
+            req = workflow.update(conn, rid, body.model_dump(exclude_unset=True), actor=_actor(principal), client_id=_owner(principal))
         background.add_task(validator.validate, rid)
         return req if principal.can("requests:read") else _public(req)
 
@@ -238,7 +251,7 @@ def build_router(require, idle) -> APIRouter:
     def withdraw_request(ref: str, body: NoteBody | None = None, principal: Principal = write_ok):
         rid = _request_id(ref)
         with _errors(), connect() as conn:
-            req = workflow.withdraw(conn, rid, actor=_actor(principal), note=body.note if body else None)
+            req = workflow.withdraw(conn, rid, actor=_actor(principal), note=body.note if body else None, client_id=_owner(principal))
         return req if principal.can("requests:read") else _public(req)
 
     # ---- requests: approver side ------------------------------------------------------------------

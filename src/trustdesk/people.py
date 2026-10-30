@@ -90,23 +90,25 @@ def _shape(conn, row: dict) -> dict:
     return row
 
 
-def get(conn, employee_no: str) -> dict:
-    row = conn.execute(f"SELECT id, manager_id, {COLUMNS} FROM employee WHERE employee_no=%s", (employee_no,)).fetchone()
+def get(conn, employee_no: str, only_by: str | None = None) -> dict:
+    """`only_by` limits the lookup to employees that client created (anyone else's is reported as not found)."""
+    row = conn.execute(f"SELECT id, manager_id, {COLUMNS} FROM employee WHERE employee_no=%s AND (%s::text IS NULL OR created_by=%s)",
+                       (employee_no, only_by, only_by)).fetchone()
     if not row:
         raise NotFound("employee not found")
     row.pop("id")
     return _shape(conn, row)
 
 
-def create(conn, data: dict) -> dict:
+def create(conn, data: dict, created_by: str | None = None) -> dict:
     vals = _clean(data, partial=False)
     mid = _manager_id(conn, data.get("manager_no"))
     try:
         conn.execute(
             "INSERT INTO employee (employee_no, name, email, department, title, level, country, hire_date, "
-            "manager_id, status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "manager_id, status, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (vals["employee_no"], vals["name"], vals["email"], vals["department"], vals["title"], vals["level"],
-             vals["country"], vals["hire_date"], mid, vals.get("status", "active")))
+             vals["country"], vals["hire_date"], mid, vals.get("status", "active"), created_by))
         conn.commit()
     except psycopg.errors.UniqueViolation as exc:
         conn.rollback()
@@ -114,7 +116,8 @@ def create(conn, data: dict) -> dict:
     return get(conn, vals["employee_no"])
 
 
-def update(conn, employee_no: str, data: dict) -> dict:
+def update(conn, employee_no: str, data: dict, only_by: str | None = None) -> dict:
+    get(conn, employee_no, only_by)          # NotFound when it does not exist or is not the caller's to change
     vals = _clean({k: v for k, v in data.items() if k != "employee_no"}, partial=True)
     sets, args = [f"{k}=%s" for k in vals], list(vals.values())
     if "manager_no" in data:
@@ -138,8 +141,11 @@ def update(conn, employee_no: str, data: dict) -> dict:
     return get(conn, employee_no)
 
 
-def listing(conn, *, query: str | None, status: str | None, limit: int, offset: int) -> dict:
+def listing(conn, *, query: str | None, status: str | None, limit: int, offset: int, only_by: str | None = None) -> dict:
     where, args = ["true"], []
+    if only_by is not None:
+        where.append("e.created_by = %s")
+        args.append(only_by)
     if status in {"active", "inactive"}:
         where.append("e.status=%s")
         args.append(status)

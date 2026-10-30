@@ -273,7 +273,7 @@ def test_without_unaccent_search_degrades_to_exact_matching(migrated, monkeypatc
 
 def test_migration_006_skips_quietly_when_the_extensions_are_unavailable():
     with tempfile.TemporaryDirectory() as tmp:
-        for f in sorted(migrate.MIGRATIONS.glob("00[1-5]_*.sql")):
+        for f in sorted([*migrate.MIGRATIONS.glob("00[1-5]_*.sql"), *migrate.MIGRATIONS.glob("008_*.sql")]):
             shutil.copy(f, Path(tmp) / f.name)
         sql = (migrate.MIGRATIONS / "006_unaccent_tcn.sql").read_text().replace("name = 'unaccent'", "name = 'no_such_ext'").replace(
             "name = 'tcn'", "name = 'no_such_ext'")
@@ -281,7 +281,7 @@ def test_migration_006_skips_quietly_when_the_extensions_are_unavailable():
         fresh_schema()
         from trustdesk.core import db
         applied = kit_migrate.run(db, Path(tmp), extensions=("vector",), replacements={"{{EMBEDDING_DIM}}": str(get_settings().embedding_dim)})
-    assert applied[-1] == "006_unaccent_tcn.sql"
+    assert "006_unaccent_tcn.sql" in applied
     with connect() as c:
         assert not c.execute("SELECT 1 FROM pg_ts_config WHERE cfgname='td_english'").fetchone()
         assert not c.execute("SELECT 1 FROM pg_trigger WHERE tgname='request_tcn'").fetchone()

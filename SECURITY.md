@@ -62,7 +62,8 @@ affected version or commit.
 **Compliance data and AI validation**
 - Requests can hold sensitive facts (sick leave, medical expenses). Only the approver session, `full` tokens and
   `client` tokens can read them; `read` and `metrics` tokens and `/mcp` cannot. A client token is a service
-  credential: anything holding it can read every request, so keep it server-side.
+  credential, but it is scoped: it reads, corrects and withdraws only the requests it created and reads or changes only the
+  employees it created; seeing every employee needs the explicit `employees:read` permission (`employees:write` to change them).
 - Employees are identified by the client application; TrustDesk does not authenticate individual employees.
 - The AI model sees the request text and details, system-computed facts and retrieved policy passages. It never
   receives names, e-mail addresses or employee numbers. Free text from employees can still contain personal data.
@@ -73,8 +74,8 @@ affected version or commit.
   decision against the AI advice requires a written justification and is flagged.
 - Every validation attempt stores a snapshot of the passages it saw, so the evidence survives later edits or
   deletion of a policy document.
-- Report CSV files neutralise cells beginning with `=`, `+`, `-` (non-numeric) or `@`. Request bodies over 64 KB are
-  refused.
+- Report CSV files neutralise cells beginning with `=`, `+`, `-` (non-numeric) or `@`. Request bodies over 1 MiB are
+  refused with 413 on every route (counted as they stream, so chunked bodies are capped too); only the document upload has a larger bound.
 
 **Content**
 - Retrieved document text is untrusted data. The Ask prompt delimits passages, tells the model not to follow

@@ -29,7 +29,9 @@ PERMISSIONS = {
     "kb:read": "search and read the knowledge base",
     "kb:write": "upload and delete documents",
     "ask": "ask questions answered by a model (spends provider credit)",
-    "requests:client": "client applications: create employees and requests, read their status",
+    "requests:client": "client applications: create employees and requests; read, correct and withdraw their own requests and employees",
+    "employees:read": "read every employee (a client application otherwise sees only the employees it created)",
+    "employees:write": "change any employee (a client application otherwise changes only the employees it created)",
     "requests:read": "see requests, their AI advice and the history",
     "requests:decide": "approve, reject or ask for information; re-run validation",
     "reports:read": "open and download reports",
@@ -47,6 +49,7 @@ SCOPE_PERMISSIONS = {
     "read": frozenset({"kb:read", "mcp:use"}), "metrics": frozenset({"metrics:scrape"}), "client": frozenset({"requests:client"}), "full": ALL,
     # scopes the identity provider can grant to services
     "trustdesk.kb.read": frozenset({"kb:read", "mcp:use"}), "trustdesk.requests.write": frozenset({"requests:client"}),
+    "trustdesk.employees.read": frozenset({"employees:read"}), "trustdesk.employees.write": frozenset({"employees:write"}),
     "trustdesk.metrics": frozenset({"metrics:scrape"}),
 }
 fed = from_env("TRUSTDESK", APP)
