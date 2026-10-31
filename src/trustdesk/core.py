@@ -4,11 +4,13 @@ Permissions are what the code checks (`requests:decide`); roles (given to people
 (given to services, local API tokens and the static key) are mapped onto them here, in one place.
 """
 
+import dataclasses
 import os
 
 from apgkit import metrics as metrics_mod
 from apgkit.auth import AppAuth, Authenticator, LocalAuth, from_env
-from apgkit.config import env_bool, trusted_hops
+from apgkit.auth.rp import RelyingParty
+from apgkit.config import env_bool, read_secret, trusted_hops
 from apgkit.db import Database
 from apgkit.llm import LLMClient
 from apgkit.netguard import NetGuard
@@ -62,6 +64,10 @@ SCOPE_PERMISSIONS = {
     "trustdesk.metrics": frozenset({"metrics:scrape"}),
 }
 fed = from_env("TRUSTDESK", APP)
+if fed.rp is not None:
+    # `from_env` decides at import whether the client secret exists; with sealed boot it does not exist until unseal. Hand the
+    # relying party a reader that looks it up at the moment of the token exchange (empty still means a public client, PKCE only).
+    fed = dataclasses.replace(fed, rp=RelyingParty(fed.issuer, fed.client_id, lambda: read_secret("TRUSTDESK_OIDC_CLIENT_SECRET")))
 APP_AUTH = AppAuth(APP, fed.client_id, ROLE_PERMISSIONS, SCOPE_PERMISSIONS)
 
 

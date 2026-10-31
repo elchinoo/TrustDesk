@@ -7,8 +7,10 @@ from pathlib import Path
 
 import psycopg
 from apgkit import insights, masking
+from apgkit import sealed as sealing
 from apgkit.auth.rp import BINDING_COOKIE, clear_binding, safe_return_to
 from apgkit.guard import SecurityGuard
+from apgkit.vault import sealed_unlocker
 from apgkit.web import is_https, mount_kit_static, public_url
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -98,8 +100,16 @@ async def _seed_retry_loop() -> None:
 MASKING_EVERY = 300.0     # seconds between re-asserts of what the read-only database role may read (see hardening.py)
 
 
+sealed = sealing.Sealed.from_env()
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
+    if sealed.enabled:
+        # Sealed boot: `trustdesk start` could not touch the database (no URL before unseal); do its work now that the app is open.
+        from .cli import boot_database
+        if await asyncio.to_thread(boot_database):
+            log.error("sealed boot: the database is not ready (see the messages above); the app is serving without it")
     _startup_tasks()
     backlog = asyncio.create_task(_backlog_loop())
     seed_retry = asyncio.create_task(_seed_retry_loop())
@@ -183,11 +193,22 @@ class McpGuard:
 
 
 # Interactive API docs load scripts from a CDN and expose the schema; keep them off.
-app = FastAPI(title="TrustDesk", version=__version__, lifespan=lifespan,
+app = FastAPI(title="TrustDesk", version=__version__, lifespan=sealed.deferred(lifespan),
               docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(BodyLimit)
 app.add_middleware(McpGuard)
 app.add_middleware(SecurityGuard, csrf_header=CSRF_HEADER, csrf_prefixes=("/api/",), body_prefixes=(), observe=core.metrics.observe)
+sealing.install(app, sealed)    # added after the other middleware so the gate is outermost: while sealed nothing else runs
+_open_vault = sealed_unlocker(core.vault, connect)
+
+
+def _on_unsealed(sl, passphrase) -> None:
+    from .migrate import run as migrate
+    migrate()    # the vault lives in the kit's settings table, which a brand-new database does not have until migrated (idempotent)
+    _open_vault(sl, passphrase)
+
+
+sealed.on_unsealed(_on_unsealed)
 app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 mount_kit_static(app)

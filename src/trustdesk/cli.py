@@ -86,13 +86,16 @@ def _serve() -> None:
                 forwarded_allow_ips=os.environ.get("TRUSTDESK_FORWARDED_ALLOW_IPS", "127.0.0.1"))
 
 
-def _start() -> int:
-    """Zero-touch startup for sandboxes where the user cannot run separate migrate/seed jobs."""
+def boot_database(progress=None) -> int:
+    """Everything that needs the database before serving: migrate, reconcile the embedding size, open the vault, seed.
+    Returns a process exit code (0 = ready). Called by `trustdesk start` before serving, or, with sealed boot, by the app
+    itself once the operator has unsealed it (the database URL does not exist before that)."""
     import os
 
     from .db import connect
     from .migrate import run
 
+    say = progress or (lambda m: print(m, file=sys.stderr, flush=True))
     try:
         applied = run()  # db.connect retries with backoff, so a waking database is tolerated
     except Exception as exc:  # noqa: BLE001 - surface a readable cause, then fail the container
@@ -106,7 +109,7 @@ def _start() -> int:
     from . import embedcfg, seedpack, vault
     from .migrate import reconcile_on_startup
 
-    reconcile_on_startup(progress=lambda m: print(m, file=sys.stderr, flush=True))   # never raises, never exits
+    reconcile_on_startup(progress=say)   # never raises, never exits
     with connect() as conn:
         embedcfg.ensure_loaded(conn)
     try:    # seeding embeds through the configured account, whose key is in the vault: open it first, as the app does
@@ -116,6 +119,22 @@ def _start() -> int:
         print(f"WARNING: could not unlock the vault before seeding: {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
     if os.environ.get("AUTO_SEED", "").lower() in {"1", "true", "yes"}:
         seedpack.auto_seed(progress=lambda m: print(m, file=sys.stderr if m.startswith("WARNING") else sys.stdout, flush=True))
+    return 0
+
+
+def _start() -> int:
+    """Zero-touch startup for sandboxes where the user cannot run separate migrate/seed jobs."""
+    from apgkit import sealed as sealing
+
+    if sealing.Sealed.from_env().enabled:
+        # Sealed boot: no database URL exists until an operator unseals the app, so the database work happens in the app's
+        # deferred lifespan (api.py), not here.
+        print("sealed boot: waiting for an operator to unseal (ecoctl unseal)", file=sys.stderr, flush=True)
+        _serve()
+        return 0
+    code = boot_database()
+    if code:
+        return code
     _serve()
     return 0
 
