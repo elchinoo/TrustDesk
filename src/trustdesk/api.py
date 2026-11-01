@@ -27,6 +27,7 @@ from . import (
     live,
     metrics,
     reembed_job,
+    rowmac,
     seedpack,
     validator,
     vault,
@@ -558,12 +559,15 @@ def rotate_vault_key(body: RotateBody, request: Request):
             raise HTTPException(409, "no provider keys are stored yet; set an admin password first")
         if not vault.is_unlocked():
             raise HTTPException(423, "the vault is locked; unlock it first")
+        snap = rowmac.snapshot(conn)                     # rows that verify under the old key: every MAC changes with the data key
         conn.rollback()                                  # rotate_data_key needs an idle connection (the checks above opened a transaction)
         try:
             counts = vault.rotate_data_key(conn, password=body.password)
         except vault.VaultError as exc:
             auth.limiter.record(client)
             raise HTTPException(403, str(exc)) from exc
+        rowmac.reseal(conn, snap)                        # signed again under the new key (rows that did not verify stay unsigned)
+        conn.commit()
     log.warning("vault data key rotated by %s; re-encrypted %s; restart the other replicas", client,
                 counts)
     return {"ok": True, "reencrypted": counts, "restart_other_replicas": True}

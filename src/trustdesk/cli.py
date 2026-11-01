@@ -17,6 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("query")
     q.add_argument("-n", type=int, default=5)
     sub.add_parser("reembed", help="re-embed all chunks after changing the embedding model or EMBEDDING_DIM")
+    sub.add_parser("adopt-rowmacs", help="sign the security-relevant rows that have no row MAC yet (asks for the admin password)")
     sub.add_parser("serve", help="run the API + MCP server")
     sub.add_parser("reset-admin", help="forget the admin password and delete stored provider keys (recovery)")
     sub.add_parser("start", help="container entrypoint: migrate, optionally seed (AUTO_SEED=true), serve")
@@ -67,10 +68,43 @@ def main(argv: list[str] | None = None) -> int:
         with connect() as conn:
             auth.reset_admin(conn)
         print("admin password, vault and stored provider keys were cleared; the setup code flow is active again")
+    elif args.cmd == "adopt-rowmacs":
+        return _adopt_rowmacs()
     elif args.cmd == "serve":
         _serve()
     elif args.cmd == "start":
         return _start()
+    return 0
+
+
+def _adopt_rowmacs() -> int:
+    """Sign every security-relevant row that has no MAC (a database that existed before row MACs, or rows written while the vault was
+    locked). It TRUSTS THE DATABASE AS IT IS AT THIS MOMENT: run it once, after migrating, on a database you believe untampered.
+    The admin password is asked for on the terminal (or the platform secret TRUSTDESK_ENCRYPTION_KEY opens the vault); it is never an argument."""
+    import getpass
+
+    from . import rowmac
+    from .core import vault
+    from .db import connect
+
+    with connect() as conn:
+        password = None
+        if vault.has_password_wrap(conn) and not vault.is_unlocked():
+            password = getpass.getpass("Admin password: ")
+        vault.try_unlock_with_platform_secret(conn)
+        try:
+            if not vault.is_unlocked() and password is not None:
+                vault.unlock_with_password(conn, password)
+        except Exception as exc:  # noqa: BLE001 - VaultError and friends: say it, never echo the password
+            print(f"refused: {exc}", file=sys.stderr)
+            return 1
+        if not vault.is_unlocked():
+            print("the vault is locked: the admin password is wrong, or set TRUSTDESK_ENCRYPTION_KEY for this command", file=sys.stderr)
+            return 1
+        counts = rowmac.adopt(conn)
+        conn.commit()
+    print("signed rows without a MAC: " + ", ".join(f"{t} {n}" for t, n in counts.items()) +
+          ". This trusted the database as it was now; rows written by anything else from here on are ignored.")
     return 0
 
 

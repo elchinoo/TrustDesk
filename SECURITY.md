@@ -15,6 +15,15 @@ affected version or commit.
   from the verified ID token. Sign-out also ends the single sign-on session. Role changes reach an existing session at its next sign-in.
 - `/mcp` needs the `mcp:use` permission; scrape-only and client-application credentials are refused.
 
+**Row MACs**
+- With the vault unlocked (always, under sealed boot) sessions, API tokens, provider accounts (id, provider, base URL, models, dimension) and the
+  settings that choose the validating and embedding account and the validation rates carry an HMAC-SHA256 under a subkey of the vault data
+  key. A database write without that key cannot plant or edit them: a row with a missing or wrong MAC is treated as missing and logged
+  once (table and key only). While the vault is locked nothing is checked. `trustdesk adopt-rowmacs` signs existing rows and trusts the
+  database as it is at that moment; data-key rotation re-signs them.
+- Limits: an older authentic row can be replayed from a backup; rows can still be deleted; employee, request, document and audit data and
+  columns outside the list (display names, timestamps, the provider key ciphertext, which the vault authenticates itself) are not covered.
+
 **Credentials**
 - First run: no credentials exist and every protected route is denied. The server prints a one-time setup code
   to its log; whoever presents it in the browser sets the admin password. The code is held in memory only and

@@ -1,7 +1,7 @@
 """Provider accounts (OpenAI-compatible endpoints). Keys are encrypted at rest and never returned."""
 from dataclasses import dataclass
 
-from . import embedcfg, vault
+from . import embedcfg, rowmac, vault
 from . import settings_store as store
 from .config import get_settings
 from .netguard import check_url
@@ -65,15 +65,23 @@ def env_account() -> dict | None:
             "embedding_model": s.embedding_model, "embedding_dim": s.embedding_dim, "read_only": True}
 
 
+_VERIFY = ", mac"    # the stored MAC travels with the row until it has been checked; stripped before a row leaves this module
+
+
+def _public(rows: list[dict]) -> list[dict]:
+    """Rows without a valid MAC (planted, edited, or not yet adopted) are treated as missing while the vault is unlocked."""
+    return [{k: v for k, v in r.items() if k != "mac"} for r in rows if rowmac.verify_row("llm_account", r)]
+
+
 def list_accounts(conn) -> list[dict]:
-    return conn.execute(f"SELECT {_PUBLIC} FROM llm_account ORDER BY name").fetchall()
+    return _public(conn.execute(f"SELECT {_PUBLIC}{_VERIFY} FROM llm_account ORDER BY name").fetchall())
 
 
 def get_account(conn, account_id: int) -> dict:
-    row = conn.execute(f"SELECT {_PUBLIC} FROM llm_account WHERE id=%s", (account_id,)).fetchone()
-    if not row:
+    rows = _public(conn.execute(f"SELECT {_PUBLIC}{_VERIFY} FROM llm_account WHERE id=%s", (account_id,)).fetchall())
+    if not rows:
         raise AccountError("account not found")
-    return row
+    return rows[0]
 
 
 def _require_vault(conn) -> None:
@@ -108,6 +116,7 @@ def create(conn, *, name: str, provider: str, base_url: str, api_key: str | None
     if key:  # the context names the row, so the key is sealed once the row has its id (same transaction)
         conn.execute("UPDATE llm_account SET api_key_enc=%s, api_key_last4=%s WHERE id=%s",
                      (vault.encrypt(key, vault.llm_key_context(row["id"])), key[-4:], row["id"]))
+    rowmac.seal(conn, "llm_account", "id=%s", (row["id"],))
     conn.commit()
     return row["id"]
 
@@ -132,6 +141,7 @@ def update(conn, account_id: int, *, name: str, provider: str, base_url: str, ap
     elif clear_key:
         sets += ["api_key_enc=NULL", "api_key_last4=NULL"]
     conn.execute(f"UPDATE llm_account SET {', '.join(sets)} WHERE id=%s", (*args, account_id))
+    rowmac.seal(conn, "llm_account", "id=%s", (account_id,))   # get_account above refused a row that did not verify
     conn.commit()
     if embedcfg.current().account_id == account_id:  # the active embedder changed: reload it
         embedcfg.reset()
@@ -148,7 +158,7 @@ def delete(conn, account_id: int) -> None:
 
 def _raw(conn, account_id: int) -> dict:
     row = conn.execute("SELECT * FROM llm_account WHERE id=%s", (account_id,)).fetchone()
-    if not row:
+    if not row or not rowmac.verify_row("llm_account", row):
         raise AccountError("account not found")
     return _upgrade_legacy(conn, row)
 
