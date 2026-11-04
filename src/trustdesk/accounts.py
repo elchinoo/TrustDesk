@@ -65,12 +65,12 @@ def env_account() -> dict | None:
             "embedding_model": s.embedding_model, "embedding_dim": s.embedding_dim, "read_only": True}
 
 
-_VERIFY = ", mac"    # the stored MAC travels with the row until it has been checked; stripped before a row leaves this module
+_VERIFY = ", mac, api_key_enc"    # the stored MAC and the ciphertext it covers travel with the row until checked; stripped before it leaves
 
 
 def _public(rows: list[dict]) -> list[dict]:
     """Rows without a valid MAC (planted, edited, or not yet adopted) are treated as missing while the vault is unlocked."""
-    return [{k: v for k, v in r.items() if k != "mac"} for r in rows if rowmac.verify_row("llm_account", r)]
+    return [{k: v for k, v in r.items() if k not in ("mac", "api_key_enc")} for r in rows if rowmac.verify_row("llm_account", r)]
 
 
 def list_accounts(conn) -> list[dict]:
@@ -170,6 +170,7 @@ def _upgrade_legacy(conn, row: dict) -> dict:
     if enc and vault.is_legacy_token(enc) and vault.is_unlocked():
         new = vault.rencrypt(enc, vault.llm_key_context(row["id"]))
         conn.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s AND api_key_enc=%s", (new, row["id"], enc))
+        rowmac.seal(conn, "llm_account", "id=%s", (row["id"],))   # the row verified before this call; the ciphertext is covered
         conn.commit()
         row = {**row, "api_key_enc": new}
     return row

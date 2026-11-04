@@ -21,12 +21,12 @@ from . import core
 
 log = logging.getLogger("trustdesk.rowmac")
 
-# llm_account: where traffic goes (base_url, provider) and which models it uses. Not the display name, last4 or timestamps, and not
-# api_key_enc: that ciphertext is already authenticated by the vault (AEAD under the data key, bound to its row id), so a write
-# without the key can neither forge nor move one; it can only blank it or replay the same row's older value.
+# llm_account: where traffic goes (base_url, provider), which models it uses, and the provider key ciphertext (api_key_enc). Covering the
+# ciphertext means a database write can neither blank a key (which would silently downgrade the account to an unauthenticated call), nor
+# move one between rows, nor replay an older value of the same row. Not the display name, last4 or timestamps.
 # app_setting: only the keys named in SETTING_KEYS; the kit's own keys (vault wraps, kit settings) are the kit's to protect.
 FIELDS: dict[str, tuple[str, ...]] = {
-    "llm_account": ("id", "provider", "base_url", "chat_model", "embedding_model", "embedding_dim"),
+    "llm_account": ("id", "provider", "base_url", "chat_model", "embedding_model", "embedding_dim", "api_key_enc"),
     "app_setting": ("key", "value"),
 }
 PK: dict[str, tuple[str, ...]] = {"llm_account": ("id",), "app_setting": ("key",)}

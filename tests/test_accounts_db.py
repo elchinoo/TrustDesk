@@ -11,7 +11,7 @@ import pytest
 if not os.environ.get("TEST_DATABASE_URL"):
     pytest.skip("set TEST_DATABASE_URL to run DB tests", allow_module_level=True)
 
-from trustdesk import auth, core, embedcfg, migrate, netguard, reembed_job, vault  # noqa: E402
+from trustdesk import auth, core, embedcfg, migrate, netguard, reembed_job, rowmac, vault  # noqa: E402
 from trustdesk.db import connect  # noqa: E402
 from trustdesk.embeddings import hash_embed  # noqa: E402
 
@@ -308,6 +308,7 @@ def test_keys_are_bound_to_their_row_and_the_store_is_registered(admin):
         vault.decrypt(rows[a])                                                  # and without any context
     with connect() as c:                                                        # a ciphertext moved to another row fails to be used
         c.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (rows[a], b))
+        rowmac.seal(c, "llm_account", "id=%s", (b,))   # written by a holder of the data key: the layer under test is the next one
         c.commit()
     assert admin.post(f"/api/accounts/{b}/test", json={"target": "chat"}, headers=H).json().get("ok") is not True
 
@@ -317,6 +318,7 @@ def test_a_legacy_key_is_read_and_resealed_with_its_context(admin):
     legacy = _legacy_token(PROVIDER_KEY)
     with connect() as c:
         c.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (legacy, acct))
+        rowmac.seal(c, "llm_account", "id=%s", (acct,))   # written by a holder of the data key: the layer under test is the next one
         c.commit()
     assert admin.post(f"/api/accounts/{acct}/test", json={"target": "chat"}, headers=H).json()["ok"] is True   # old row works
     with connect() as c:
@@ -329,6 +331,7 @@ def test_rotating_the_data_key_reencrypts_every_stored_key(admin):
     ids = [new_account(admin, name=f"a{i}").json()["id"] for i in range(2)]
     with connect() as c:
         c.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (_legacy_token(PROVIDER_KEY), ids[1]))
+        rowmac.seal(c, "llm_account", "id=%s", (ids[1],))   # written by a holder of the data key: the layer under test is the next one
         c.commit()
         before = {r["id"]: r["api_key_enc"] for r in c.execute("SELECT id, api_key_enc FROM llm_account")}
     assert admin.post("/api/vault/rotate-key", json={"password": PASSWORD}, headers=H).status_code == 422       # needs confirm

@@ -72,6 +72,22 @@ def test_an_account_written_by_the_app_verifies():
     assert _visible() == ["renamed"]
 
 
+def test_a_swapped_or_blanked_key_blob_is_ignored_while_unlocked():
+    a, b = _account(name="one"), _account(name="two")
+    with connect() as c:
+        enc_a = c.execute("SELECT api_key_enc FROM llm_account WHERE id=%s", (a,)).fetchone()["api_key_enc"]
+        c.execute("UPDATE llm_account SET api_key_enc=%s WHERE id=%s", (enc_a, b))      # a's key blob copied into b
+        c.execute("UPDATE llm_account SET api_key_enc=NULL, api_key_last4=NULL WHERE id=%s", (a,))   # a's key blanked
+        c.commit()
+    assert _visible() == []
+    with connect() as c:
+        for i in (a, b):
+            with pytest.raises(accounts.AccountError):
+                accounts.chat_config_for(c, i)
+    vault.lock()                                                         # no vault: behaviour as before row MACs
+    assert sorted(_visible()) == ["one", "two"]
+
+
 def test_a_forged_account_is_ignored_while_unlocked_and_accepted_while_locked():
     _account()
     forged = _plant()
