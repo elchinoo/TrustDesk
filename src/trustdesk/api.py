@@ -3,6 +3,7 @@ import contextlib
 import logging
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import psycopg
@@ -310,7 +311,7 @@ def aidb_governance(status: str = Query("all", pattern="^(all|denied|allowed)$")
     with connect(retries=1) as conn:
         out = {"mode": aidbmode.state(fresh=True).public()}
         if aidbmode.requested() == "aidb" and vault.is_unlocked():
-            out["mode"]["seals"] = aidbmode.drift_of(conn) if out["mode"].get("aidb", {}).get("available") else []
+            out["mode"]["seals"] = [asdict(d) for d in aidbmode.verify(conn)] if out["mode"].get("aidb", {}).get("available") else []
         out["governance"] = aidbmode.governance(conn, status=status, limit=limit)
         return out
 

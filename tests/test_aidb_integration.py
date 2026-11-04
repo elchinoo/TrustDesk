@@ -18,6 +18,7 @@ import secrets
 import socket
 import time
 import uuid
+from dataclasses import asdict
 from datetime import date, timedelta
 
 import pytest
@@ -171,7 +172,7 @@ def heal(world, monkeypatch):
         aidbmode.setup(a, runtime_role=world.role, vault=core.vault, cfg=world.cfg, reseal=True)
     aidbmode.reset()
     with connect() as c:
-        assert aidbmode.drift_of(c) == []
+        assert aidbmode.verify(c) == []
 
 
 def changes(steps):
@@ -204,7 +205,7 @@ def test_setup_created_everything_and_a_repeat_changes_nothing(world, admin, mon
 
 def test_every_definition_is_sealed_and_the_runtime_role_verifies_them(world, admin):
     with connect() as c:
-        assert aidbmode.drift_of(c) == []
+        assert aidbmode.verify(c) == []
     sealed = {(r["kind"], r["name"]) for r in admin.execute("SELECT kind, name FROM apgkit_aidb_seal").fetchall()}
     want = {("pipeline", aidbmode.PIPELINE), ("sql_tool", aidbmode.TOOL_BALANCE), ("sql_tool", aidbmode.TOOL_TRAVEL),
             ("purpose", aidbmode.PURPOSE)}
@@ -455,7 +456,7 @@ def test_a_tool_that_reaches_for_unrelated_tables_or_writes_is_refused_by_postgr
         admin.commit()
         aidbmode.reset()
     with connect() as c:
-        assert aidbmode.drift_of(c) == []
+        assert aidbmode.verify(c) == []
 
 
 def test_the_view_the_agent_reads_for_balances_has_no_personal_data(admin):
@@ -469,7 +470,7 @@ def _expect_off(world, drift_kind, drift_name, problem, client, monkeypatch, cap
     with caplog.at_level(logging.WARNING):
         st = aidbmode.state(fresh=True)
     assert st.code == "tampered" and not st.retrieval and not st.agent
-    assert {"kind": drift_kind, "name": drift_name, "problem": problem} in st.drift
+    assert {"kind": drift_kind, "name": drift_name, "problem": problem} in [asdict(d) for d in st.drift]
     assert rowmac.tampered.labels(f"aidb_{drift_kind}")._value.get() > before
     assert f"seal {problem}: {drift_kind} {drift_name}" in caplog.text
     # while the definitions cannot be trusted: no AIDB retrieval, no agent, and the app still answers
@@ -517,7 +518,7 @@ def test_a_planted_agent_in_our_namespace_and_a_deleted_seal_are_detected(world,
     try:
         _expect_off(world, "agent", "td_evil", "unsealed", client, monkeypatch, caplog)
         with connect() as c:
-            names = {d["name"] for d in aidbmode.drift_of(c)}
+            names = {d.name for d in aidbmode.verify(c)}
         assert "someone_elses_agent" not in names                  # another app's agent in a shared database is not ours to judge
     finally:
         admin.execute("SELECT aidb.delete_agent('td_evil', true)")
@@ -529,7 +530,7 @@ def test_a_planted_agent_in_our_namespace_and_a_deleted_seal_are_detected(world,
     admin.commit()
     aidbmode.reset()
     st = aidbmode.state(fresh=True)
-    assert {"kind": "agent", "name": aidbmode.AGENT, "problem": "unsealed"} in st.drift and not st.agent
+    assert {"kind": "agent", "name": aidbmode.AGENT, "problem": "unsealed"} in [asdict(d) for d in st.drift] and not st.agent
 
 
 def test_a_deleted_agent_is_reported_missing(world, need_agent, admin, client, monkeypatch, caplog, heal):

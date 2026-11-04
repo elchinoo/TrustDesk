@@ -41,7 +41,7 @@ set -a; . ./.env; set +a
 .venv/bin/trustdesk serve         # http://localhost:8000
 ```
 
-`pyproject.toml` takes the shared kit (`agentpg-kit`) from the same release tag the Docker image installs (`v0.5.0`), so no sibling checkout is needed. If you are also changing the kit, install your checkout over it: `uv pip install -e ../agentpg-kit` (or `make kit-local`).
+`pyproject.toml` takes the shared kit (`agentpg-kit`) from the same release tag the Docker image installs (`v0.5.1`), so no sibling checkout is needed. If you are also changing the kit, install your checkout over it: `uv pip install -e ../agentpg-kit` (or `make kit-local`).
 
 The first time the server starts it prints a **one-time setup code** to its console:
 

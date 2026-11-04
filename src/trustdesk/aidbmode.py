@@ -17,7 +17,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import psycopg
@@ -108,14 +108,14 @@ class State:
     agent: bool = False             # pre-validation may go to the AIDB agent
     reason: str = ""                # why not, in words (empty when everything requested is active)
     code: str = ""                  # the same, as a word safe for the unauthenticated /readyz: unavailable, vault_locked, tampered, not_set_up, error
-    drift: list[dict] = field(default_factory=list)
+    drift: list[aidb.Drift] = field(default_factory=list)
     detail: dict = field(default_factory=dict)
     checked_at: float = 0.0
     retriever: Any = None
 
     def public(self) -> dict:
         return {"requested": self.requested, "retrieval": self.retrieval, "agent": self.agent, "reason": self.reason,
-                "code": self.code, "drift": self.drift, **self.detail}
+                "code": self.code, "drift": [asdict(d) for d in self.drift], **self.detail}
 
     def brief(self) -> dict:
         """What /readyz shows (no names, no reasons): which backend, which parts are in use, and a one-word cause when not."""
@@ -150,50 +150,27 @@ def _ours(name: str) -> bool:
     return name.startswith("td_") or name == CREDENTIAL      # other apps' objects in a shared database are not ours to judge
 
 
-def drift_of(conn) -> list[dict]:
-    """Definitions of ours whose seal is wrong, missing or absent: [{"kind", "name", "problem"}] with problem `modified` (changed by a
-    database write since it was sealed), `missing` (sealed, then deleted) or `unsealed` (exists, no seal: planted, or its seal row
-    was deleted). Needs the vault open. This is the kit's `aidb.verify` check (same canonical definitions, same MAC) written to
-    run as the app's UNPRIVILEGED role: the kit's `verify` begins with CREATE TABLE IF NOT EXISTS, which Postgres refuses
-    to a role without CREATE on the schema even when the table exists."""
-    found: dict[tuple[str, str], str] = {}
-    sealed: set[tuple[str, str]] = set()
-    if conn.execute("SELECT to_regclass(%s) IS NOT NULL AS ok", (f"public.{aidb.SEAL_TABLE}",)).fetchone()["ok"]:
-        for row in conn.execute(f"SELECT kind, name, mac FROM {aidb.SEAL_TABLE} ORDER BY kind, name").fetchall():   # noqa: S608
-            key = (row["kind"], row["name"])
-            sealed.add(key)
-            if row["kind"] not in aidb.SEAL_KINDS or not _ours(row["name"]):
-                continue
-            fields = aidb.definition(conn, row["kind"], row["name"])
-            if fields is None:
-                found[key] = "missing"
-            elif not core.vault.check_row_mac(aidb.SEAL_TABLE, row["mac"], *fields):
-                found[key] = "modified"
-    for kind, query in (("agent", "SELECT name FROM aidb.agents"),
-                        ("purpose", "SELECT name FROM aidb.purpose_registry WHERE deleted_at IS NULL"),
-                        ("sql_tool", "SELECT name FROM aidb.sql_tool_registry")):
-        for r in conn.execute(query).fetchall():                  # planted objects in our namespace
-            if _ours(r["name"]) and (kind, r["name"]) not in sealed:
-                found[(kind, r["name"])] = "unsealed"
-    for kind, name in _expected_seals():                          # the rest of what setup creates: a deleted seal row is noticed too
-        if (kind, name) not in sealed and (kind, name) not in found and aidb.definition(conn, kind, name) is not None:
-            found[(kind, name)] = "unsealed"
+def verify(conn) -> list[aidb.Drift]:
+    """Definitions of ours whose seal is wrong, missing or absent (`Drift.problem`: `modified`, `missing` or `unsealed`). Needs the
+    vault open. This is the kit's `aidb.verify`, which is read-only (no DDL, SELECT on the seal table), so it runs as the app's
+    UNPRIVILEGED role; a database without the seal table reports what exists as `unsealed`."""
+    drift = aidb.verify(conn, core.vault, only=lambda k, n: _ours(n), expect=_expected_seals())
     conn.commit()
-    return [{"kind": k, "name": n, "problem": p} for (k, n), p in sorted(found.items())]
+    return drift
 
 
-def _report_drift(drift: list[dict]) -> None:
+def _report_drift(drift: list[aidb.Drift]) -> None:
     """Like a row MAC that does not verify: count it and log it once (kind and name only, never definitions)."""
     DRIFT.set(len(drift))
     for d in drift:
-        rowmac.tampered.labels(f"aidb_{d['kind']}").inc()
-        key = (d["kind"], d["name"], d["problem"])
+        rowmac.tampered.labels(f"aidb_{d.kind}").inc()
+        key = (d.kind, d.name, d.problem)
         with _lock:
             first = key not in _logged
             _logged.add(key)
         if first:
             log.warning("AIDB definition refused, seal %s: %s %s (AIDB mode is off until it is inspected and re-sealed)",
-                        d["problem"], d["kind"], d["name"])
+                        d.problem, d.kind, d.name)
 
 
 def _agent_ready(conn) -> tuple[bool, str]:
@@ -227,10 +204,10 @@ def _compute(want: str) -> State:
             st.code = "vault_locked"
             st.detail["vault"] = "locked"
             return st
-        st.drift = drift_of(conn)
+        st.drift = verify(conn)
         _report_drift(st.drift)
         if st.drift:
-            st.reason = "AIDB definitions do not match their seals: " + ", ".join(f"{d['kind']} {d['name']} ({d['problem']})"
+            st.reason = "AIDB definitions do not match their seals: " + ", ".join(f"{d.kind} {d.name} ({d.problem})"
                                                                                for d in st.drift)
             st.code = "tampered"
             return st
@@ -353,7 +330,7 @@ def run_agent(request_id: int, user_message: str) -> tuple[str | None, str]:
         conn = connect(retries=1)
         if not core.vault.is_unlocked():
             raise RuntimeError("the vault is locked")
-        drift = drift_of(conn)
+        drift = verify(conn)
         if drift:
             _report_drift(drift)
             reset()
@@ -544,7 +521,7 @@ def setup(admin, *, runtime_role: str, vault, cfg: SetupConfig, reseal: bool = F
     admin.execute(GOVERNANCE_VIEW_SQL)
     done(f"view {GOVERNANCE_VIEW}", "ensured")
     done(f"SELECT on {GOVERNANCE_VIEW} -> {runtime_role}", _grant_select(admin, "public", GOVERNANCE_VIEW, runtime_role))
-    aidb._seal_table(admin)
+    aidb._seal_table(admin)       # the sealing calls above created it; this is the operator-side guarantee (the runtime role can never create it)
     done(f"SELECT on {aidb.SEAL_TABLE} -> {runtime_role}", _grant_select(admin, "public", aidb.SEAL_TABLE, runtime_role))
     admin.commit()
     reset()

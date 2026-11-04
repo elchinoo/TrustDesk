@@ -187,6 +187,7 @@ def _aidb_setup(args) -> int:
 
 def _aidb_status() -> int:
     import json
+    from dataclasses import asdict
 
     from apgkit import aidb
 
@@ -202,7 +203,7 @@ def _aidb_status() -> int:
             {"note": "the app backend is requested: nothing from AIDB is used"}
         report["aidb"] = aidb.status(conn)
         if vault.is_unlocked() and report["aidb"]["aidb"].get("available"):
-            report["seals"] = aidbmode.drift_of(conn)
+            report["seals"] = [asdict(d) for d in aidbmode.verify(conn)]
         report["governance"] = aidbmode.governance(conn, limit=10)
     print(json.dumps(report, indent=2, default=str))
     problems = report["aidb"].get("problems", [])

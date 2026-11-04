@@ -372,7 +372,7 @@ def test_the_tampered_counter_and_the_seal_names_are_the_row_mac_ones():
     """Drift is reported through the same counter the row MACs use, with table `aidb_<kind>`."""
     from trustdesk import rowmac
     before = rowmac.tampered.labels("aidb_agent")._value.get()
-    aidbmode._report_drift([{"kind": "agent", "name": "td_prevalidator", "problem": "modified"}])
+    aidbmode._report_drift([aidbmode.aidb.Drift("agent", "td_prevalidator", "modified")])
     assert rowmac.tampered.labels("aidb_agent")._value.get() == before + 1
     assert aidbmode.DRIFT._value.get() == 1
     aidbmode._report_drift([])
