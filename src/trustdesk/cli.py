@@ -18,6 +18,14 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("-n", type=int, default=5)
     sub.add_parser("reembed", help="re-embed all chunks after changing the embedding model or EMBEDDING_DIM")
     sub.add_parser("adopt-rowmacs", help="sign the security-relevant rows that have no row MAC yet (asks for the admin password)")
+    setup = sub.add_parser("aidb-setup", help="operator: create or converge the AIDB pipeline, tools, purpose and agent (needs a privileged "
+                                              "database connection; idempotent)")
+    setup.add_argument("--runtime-role", default="", help="the database role the app runs as (default: the user of DATABASE_URL)")
+    setup.add_argument("--embedding-model", default="", help="AIDB embedding model for the knowledge base (default: the local bge-small)")
+    setup.add_argument("--skip-model-check", action="store_true", help="register the chat model without AIDB calling the endpoint first")
+    setup.add_argument("--reseal", action="store_true", help="accept the current state of AIDB objects that no longer match their seal "
+                                                             "(after you inspected them)")
+    sub.add_parser("aidb-status", help="AIDB mode: requested backend, what is in use and why not, pipeline lag, seals, recent decisions")
     sub.add_parser("serve", help="run the API + MCP server")
     sub.add_parser("reset-admin", help="forget the admin password and delete stored provider keys (recovery)")
     sub.add_parser("start", help="container entrypoint: migrate, optionally seed (AUTO_SEED=true), serve")
@@ -70,6 +78,10 @@ def main(argv: list[str] | None = None) -> int:
         print("admin password, vault and stored provider keys were cleared; the setup code flow is active again")
     elif args.cmd == "adopt-rowmacs":
         return _adopt_rowmacs()
+    elif args.cmd == "aidb-setup":
+        return _aidb_setup(args)
+    elif args.cmd == "aidb-status":
+        return _aidb_status()
     elif args.cmd == "serve":
         _serve()
     elif args.cmd == "start":
@@ -106,6 +118,95 @@ def _adopt_rowmacs() -> int:
     print("signed rows without a MAC: " + ", ".join(f"{t} {n}" for t, n in counts.items()) +
           ". This trusted the database as it was now; rows written by anything else from here on are ignored.")
     return 0
+
+
+def _unlock_vault_for_cli(conn) -> str:
+    """Open the vault for an operator command: the admin password is asked on the terminal (never an argument), or the platform
+    secret opens it. Returns an error message, or '' when the vault is open."""
+    import getpass
+
+    from .core import vault
+
+    password = None
+    if vault.has_password_wrap(conn) and not vault.is_unlocked():
+        password = getpass.getpass("Admin password: ")
+    vault.try_unlock_with_platform_secret(conn)
+    try:
+        if not vault.is_unlocked() and password is not None:
+            vault.unlock_with_password(conn, password)
+    except Exception as exc:  # noqa: BLE001 - never echo the password
+        return f"refused: {exc}"
+    if not vault.is_unlocked():
+        return ("the vault is locked or not set up: sign in once to create the admin password, then run this again "
+                "(or set TRUSTDESK_ENCRYPTION_KEY for this command)")
+    return ""
+
+
+def _aidb_setup(args) -> int:
+    """Create or converge the AIDB objects. The privileged connection string comes from the environment variable
+    TRUSTDESK_AIDB_ADMIN_DSN (or a file named by TRUSTDESK_AIDB_ADMIN_DSN_FILE) or a prompt. It is used for this command only:
+    never stored, never printed, never put in the app's environment."""
+    import getpass
+    import os
+
+    import psycopg
+    from apgkit import aidb
+    from apgkit.config import read_secret
+    from psycopg.rows import dict_row
+
+    from . import aidbmode
+    from .config import get_settings
+    from .core import vault
+    from .db import connect
+
+    with connect() as app:
+        runtime = args.runtime_role or app.execute("SELECT current_user AS u").fetchone()["u"]
+        err = _unlock_vault_for_cli(app)
+    if err:
+        print(err, file=sys.stderr)
+        return 1
+    dsn = read_secret("TRUSTDESK_AIDB_ADMIN_DSN") or getpass.getpass("Privileged database connection string: ")
+    cfg = aidbmode.SetupConfig(embedding_model=args.embedding_model or aidb.LOCAL_EMBEDDING_MODEL,
+                               chat_base_url=get_settings().llm_base_url, chat_model=get_settings().llm_chat_model,
+                               validate_model=False if args.skip_model_check else None)
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row) as admin:
+            steps = aidbmode.setup(admin, runtime_role=runtime, vault=vault, cfg=cfg, reseal=args.reseal)
+    except aidb.AidbTampered as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    except (aidb.AidbError, psycopg.Error) as exc:   # the message never contains the connection string
+        print(f"aidb-setup failed: {type(exc).__name__}: {str(exc).splitlines()[0][:300] if str(exc) else ''}", file=sys.stderr)
+        return 1
+    for what, how in steps:
+        print(f"{how:>12}  {what}" if len(how) <= 12 else f"  {what}: {how}")
+    backend = os.environ.get("TRUSTDESK_RETRIEVAL_BACKEND", "app") or "app"
+    print(f"\nDone. Switch the app over with TRUSTDESK_RETRIEVAL_BACKEND=aidb (now: {backend}), then check `trustdesk aidb-status`.")
+    return 0
+
+
+def _aidb_status() -> int:
+    import json
+
+    from apgkit import aidb
+
+    from . import aidbmode
+    from .core import vault
+    from .db import connect
+
+    with connect() as conn:
+        report: dict = {"requested_backend": aidbmode.requested()}
+        vault.try_unlock_with_platform_secret(conn)
+        report["vault"] = "open" if vault.is_unlocked() else "locked (seals cannot be verified; set TRUSTDESK_ENCRYPTION_KEY for this command)"
+        report["aidb_mode"] = aidbmode.state(fresh=True).public() if aidbmode.requested() == "aidb" else \
+            {"note": "the app backend is requested: nothing from AIDB is used"}
+        report["aidb"] = aidb.status(conn)
+        if vault.is_unlocked() and report["aidb"]["aidb"].get("available"):
+            report["seals"] = aidbmode.drift_of(conn)
+        report["governance"] = aidbmode.governance(conn, limit=10)
+    print(json.dumps(report, indent=2, default=str))
+    problems = report["aidb"].get("problems", [])
+    return 1 if (report.get("seals") or any("pipeline" in p for p in problems)) else 0
 
 
 def _serve() -> None:

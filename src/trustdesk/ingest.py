@@ -1,9 +1,11 @@
 """Ingest documents: parse -> chunk -> embed -> store. Idempotent on (org, source, sha256)."""
 import hashlib
 import io
+from datetime import date
 from pathlib import Path
 
 from pgvector import Vector
+from psycopg.types.json import Jsonb
 
 from . import embedcfg
 from .chunking import chunk_markdown
@@ -34,8 +36,17 @@ def parse_bytes(name: str, data: bytes) -> str:
 
 
 def ingest_text(
-    *, title: str, source: str, text: str, org_id: str = "default", doc_type: str = "policy", conn=None, cfg=None
+    *, title: str, source: str, text: str, org_id: str = "default", doc_type: str = "policy", conn=None, cfg=None,
+    meta: dict | None = None
 ) -> dict:
+    """`meta` is stored on the document; `department` and `effective_date` (YYYY-MM-DD) in it become filters of AIDB mode's knowledge
+    base (aidbschema.py). The app's own search ignores them."""
+    meta = dict(meta or {})
+    if meta.get("effective_date"):
+        try:
+            date.fromisoformat(str(meta["effective_date"]))
+        except ValueError as exc:
+            raise ValueError("effective_date must be a real date, YYYY-MM-DD") from exc
     sha = hashlib.sha256(text.encode()).hexdigest()
     own = conn is None
     conn = conn or connect_vector()
@@ -60,9 +71,9 @@ def ingest_text(
         ensure_fits(conn, cfg)  # NeedsReembedding (HTTP 503) instead of a database error on a vector of the wrong size
         vectors = embed([f"{c.heading}\n{c.body}" for c in chunks], cfg)
         doc = conn.execute(
-            "INSERT INTO kb_document (org_id, title, source, doc_type, version, sha256) "
-            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
-            (org_id, title, source, doc_type, version, sha),
+            "INSERT INTO kb_document (org_id, title, source, doc_type, version, sha256, meta) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (org_id, title, source, doc_type, version, sha, Jsonb(meta)),
         ).fetchone()
         with conn.cursor() as cur:
             cur.executemany(

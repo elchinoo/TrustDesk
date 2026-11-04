@@ -24,6 +24,34 @@ affected version or commit.
 - Limits: an older authentic row can be replayed from a backup; rows can still be deleted; employee, request, document and audit data and
   columns outside the list (display names, timestamps) are not covered. After upgrading, `trustdesk migrate` clears the older provider-account MACs and `trustdesk adopt-rowmacs` signs them again.
 
+**AIDB mode** (`TRUSTDESK_RETRIEVAL_BACKEND=aidb`, optional; default `app`; README, "AIDB mode")
+- Privilege split. The app's **runtime role** stays unprivileged: member of `aidb_users` plus the app's own tables. Creating roles, purposes,
+  models, credentials, pipelines and agents, and turning decision records on, is `trustdesk aidb-setup`, an operator command with a
+  privileged connection string taken from a prompt or `TRUSTDESK_AIDB_ADMIN_DSN`, used for that command only, never stored, logged or
+  printed (a test checks that neither the connection string nor the admin password nor the gateway key appears in its output). The app
+  never needs `aidb_governance`: the Governance tab reads a view (`td_governance_decisions_v`) limited to this app's agent.
+- Confinement. The pre-validation agent holds a **purpose**; its tools run as the NOLOGIN role `aidb_p_td_prevalidation`, which has
+  `SELECT` on two views (`td_policy_v`, `td_employee_balance_v`) and no other privilege. The views run with their owner's rights, so the
+  role needs no access to any table, and the balance view carries no name, e-mail or employee number. Tested on real AIDB 7.9.0: a tool
+  that reads `employee`, `llm_account` or `kb_chunk`, or updates `request`, is refused by Postgres (`42501`, `engine_privilege_denied`)
+  and each refusal is a `denied` decision in `aidb_otel.traces`, shown in the Governance tab; the request stayed unchanged.
+- The model still only advises. The agent's answer goes through the same checks as a gateway answer (citations must name real passages,
+  quotes are matched word for word, an approval with no citable basis is downgraded), and a person decides. Tool output is never a citation.
+- Seals. The pipeline, model, gateway credential (endpoint and sharing flag, not the key), SQL tools, purpose **and the purpose role's grants**
+  and the agent are sealed with the vault (the kit's `aidb.seal` / `aidb.verify`: an HMAC under a subkey of the data key). They are
+  verified at start-up, every minute and right before each agent call; one that no longer matches (`modified`), was deleted (`missing`)
+  or was planted or unsealed in our `td_*` namespace (`unsealed`) turns AIDB mode off (the app path answers), counts in
+  `trustdesk_tampered_rows_total{table="aidb_<kind>"}` like a row MAC and is logged once per object (kind and name, never definitions).
+  `aidb-setup` refuses to touch a sealed object that no longer matches until you inspect it and pass `--reseal`. With the vault locked
+  nothing can be verified, so AIDB mode stays off until it opens (always open under sealed boot).
+- Limits. This detects, it does not prevent: a database superuser can change an AIDB definition, an older authentic one can be put back
+  from a backup, and the check runs periodically, not on every statement. Not covered: the contents of `kb_chunk` (documents have never
+  carried a MAC), `td_governance_decisions_v`, who holds `USAGE` on the gateway credential, AIDB's own code and settings
+  (`aidb.otel_client`, egress options). Any member of `aidb_users` can create AIDB agents. The gateway key is stored by AIDB in a credential
+  limited to the gateway's host and private to the role that created it (the runtime role may use it, not read it). AIDB refuses plain
+  `http` model calls except to private addresses with `aidb.allow_insecure_egress=on` (test only). Agent memory (preview) is not used.
+- `/readyz` reports AIDB in coarse words only (requested, retrieval, agent, a one-word `problem`) and never fails because of it.
+
 **Credentials**
 - First run: no credentials exist and every protected route is denied. The server prints a one-time setup code
   to its log; whoever presents it in the browser sets the admin password. The code is held in memory only and

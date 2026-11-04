@@ -68,7 +68,30 @@ _NO_VEC = "SELECT NULL::bigint AS id, NULL::bigint AS rnk WHERE false"   # full-
 
 
 def hybrid_search(query: str, *, org_id: str = "default", doc_type: str | None = None,
-                  limit: int = 5, candidates: int = 30, conn=None) -> list[dict]:
+                  limit: int = 5, candidates: int = 30, conn=None, department: str | None = None, as_of=None) -> list[dict]:
+    """Passages for a query, with provenance. With TRUSTDESK_RETRIEVAL_BACKEND=aidb (and AIDB set up and verified) an AIDB knowledge
+    base answers, in the same shape; `department` and `as_of` are filters of that backend only. Any AIDB failure falls back to
+    the app's own search for that call, loudly (aidbmode.py)."""
+    from . import aidbmode
+
+    r = aidbmode.retriever()
+    if r is not None:
+        own = conn is None
+        c = conn or connect_vector()
+        try:
+            with c.transaction():       # a savepoint when the caller is mid-transaction: a failure here leaves its work intact
+                return aidbmode.search(r, c, query, org_id=org_id, doc_type=doc_type, limit=limit, department=department, as_of=as_of)
+        except Exception as exc:  # noqa: BLE001 - AIDB must never take search down
+            aidbmode.note_runtime_failure("retrieval", exc)
+        finally:
+            if own:
+                c.close()
+    return app_search(query, org_id=org_id, doc_type=doc_type, limit=limit, candidates=candidates, conn=conn)
+
+
+def app_search(query: str, *, org_id: str = "default", doc_type: str | None = None,
+               limit: int = 5, candidates: int = 30, conn=None) -> list[dict]:
+    """The app's own hybrid search over `kb_chunk` (vector, full text and trigram, fused with RRF)."""
     own = conn is None
     conn = conn or connect_vector()
     try:

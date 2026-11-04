@@ -7,12 +7,13 @@ word against the passage text, and a recommendation without a citable basis is d
 """
 import contextlib
 import json
+import logging
 import re
 import time
 
 from psycopg.types.json import Jsonb
 
-from . import accounts, facts, metrics, request_types, vault, workflow
+from . import accounts, aidbmode, facts, metrics, request_types, vault, workflow
 from . import ask as asker
 from . import settings_store as store
 from .config import get_settings
@@ -55,6 +56,9 @@ SYSTEM = (
     '"citations":[{"passage":1,"quote":"exact words from passage 1"}],'
     '"missing_information":["anything the approver should ask the employee"]}'
 )
+
+
+log = logging.getLogger("trustdesk.validator")
 
 
 class VerdictError(ValueError):
@@ -326,26 +330,31 @@ def validate(request_id: int) -> str:
         state, passages, cfg, verdict, usage, error = "failed", [], None, None, None, None
         retryable = True
         try:
-            ref = choose_account(conn)
-            if ref is None:
-                state, error = "skipped", ("No chat model is configured for validation. Add an account with a chat "
-                                           "model in Settings and choose it under Request validation.")
+            agent = _try_agent(conn, request_id, req, fact_map, checks)        # AIDB mode only: None means "use the gateway path"
+            if agent is not None:
+                passages, verdict, cfg = agent
+                state = "ok"
             else:
-                cfg = accounts.chat_config_for(conn, ref)
-                passages = gather_passages(conn, req)
-                conn.commit()  # do not hold a transaction open across the model call
-                messages = build_messages(req, fact_map, passages)
-                reply = asker.chat(cfg, messages, max_tokens=1200)
-                try:
-                    verdict = parse_verdict(reply["text"], passages, checks)
-                except VerdictError:
-                    again = asker.chat(cfg, messages + [
-                        {"role": "assistant", "content": reply["text"][:3000]},
-                        {"role": "user", "content": "That was not a valid verdict. Reply with ONLY the JSON object."}],
-                        max_tokens=1200)
-                    verdict = parse_verdict(again["text"], passages, checks)
-                    reply = again
-                usage, state = reply.get("usage"), "ok"
+                ref = choose_account(conn)
+                if ref is None:
+                    state, error = "skipped", ("No chat model is configured for validation. Add an account with a chat "
+                                               "model in Settings and choose it under Request validation.")
+                else:
+                    cfg = accounts.chat_config_for(conn, ref)
+                    passages = gather_passages(conn, req)
+                    conn.commit()  # do not hold a transaction open across the model call
+                    messages = build_messages(req, fact_map, passages)
+                    reply = asker.chat(cfg, messages, max_tokens=1200)
+                    try:
+                        verdict = parse_verdict(reply["text"], passages, checks)
+                    except VerdictError:
+                        again = asker.chat(cfg, messages + [
+                            {"role": "assistant", "content": reply["text"][:3000]},
+                            {"role": "user", "content": "That was not a valid verdict. Reply with ONLY the JSON object."}],
+                            max_tokens=1200)
+                        verdict = parse_verdict(again["text"], passages, checks)
+                        reply = again
+                    usage, state = reply.get("usage"), "ok"
         except vault.VaultLocked:
             error = "Provider keys are locked. Sign in to TrustDesk and unlock them, then run validation again."
         except (LLMError, EmbeddingError, accounts.AccountError, VerdictError) as exc:
@@ -369,6 +378,42 @@ def validate(request_id: int) -> str:
         return state
     finally:
         conn.close()
+
+
+class _AgentCfg:
+    """What the validation row records when the AIDB agent produced the verdict (there is no provider account)."""
+    model = f"aidb:{aidbmode.AGENT}"
+    label = "AIDB agent"
+
+
+def _try_agent(conn, request_id: int, req: dict, fact_map: dict, checks: list[dict]):
+    """With TRUSTDESK_RETRIEVAL_BACKEND=aidb and the agent set up and verified: retrieve the passages (through the same search, so
+    through the AIDB knowledge base when that is active), let the agent judge the request with its tools, and run the SAME checks on
+    its answer as on a gateway answer (every citation must point at a real passage, every quote is matched word for word). Returns
+    (passages, verdict, cfg), or None when the gateway path should answer: AIDB off or not ready, the agent errored or timed out, or
+    its answer was not a usable verdict. Never raises."""
+    if not aidbmode.agent_enabled():
+        return None
+    try:
+        passages = gather_passages(conn, req)
+        conn.commit()      # no transaction open across the agent call
+        user = build_messages(req, fact_map, passages)[1]["content"]
+        text, outcome = aidbmode.run_agent(request_id, user)
+        if text is None:
+            aidbmode.FALLBACKS.labels("agent", outcome).inc()
+            log.error("AIDB MODE FALLBACK: the agent did not answer (%s) for request %s; using the gateway path", outcome, request_id)
+            return None
+        return passages, parse_verdict(text, passages, checks), _AgentCfg
+    except VerdictError as exc:
+        aidbmode.AGENT_RUNS.labels("unusable").inc()
+        aidbmode.FALLBACKS.labels("agent", "unusable").inc()
+        log.error("AIDB MODE FALLBACK: the agent's answer for request %s was not a usable verdict (%s); using the gateway path",
+                  request_id, exc)
+        return None
+    except Exception as exc:  # noqa: BLE001 - AIDB mode must never make validation fail
+        aidbmode.note_runtime_failure("agent", exc)
+        conn.rollback()
+        return None
 
 
 def latest(conn, request_id: int) -> dict | None:

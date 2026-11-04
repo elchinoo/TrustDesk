@@ -41,7 +41,7 @@ set -a; . ./.env; set +a
 .venv/bin/trustdesk serve         # http://localhost:8000
 ```
 
-`pyproject.toml` takes the shared kit (`agentpg-kit`) from the same release tag the Docker image installs (`v0.4.0`), so no sibling checkout is needed. If you are also changing the kit, install your checkout over it: `uv pip install -e ../agentpg-kit` (or `make kit-local`).
+`pyproject.toml` takes the shared kit (`agentpg-kit`) from the same release tag the Docker image installs (`v0.5.0`), so no sibling checkout is needed. If you are also changing the kit, install your checkout over it: `uv pip install -e ../agentpg-kit` (or `make kit-local`).
 
 The first time the server starts it prints a **one-time setup code** to its console:
 
@@ -425,6 +425,50 @@ Notes:
 - If you use an external embedding provider and the server has restarted, searches return "locked" until you unlock the vault in the web app (or the operator configured a platform secret).
 - Treat search results as untrusted text: they come from your documents and may contain instructions. Don't give an assistant that reads them more authority than you would give the document authors.
 
+## AIDB mode (optional: EDB AI Accelerator inside the database)
+
+With `TRUSTDESK_RETRIEVAL_BACKEND=aidb` the database does the AI plumbing that the app does itself otherwise. The default is `app`, which is plain Postgres and unchanged; every test of that path still runs and passes. `aidb` is opt-in and **falls back to the `app` path, loudly, whenever it cannot be used**. Section "AIDB mode" of [SECURITY.md](SECURITY.md) has the security model.
+
+> [!NOTE]
+> **What was verified, and what was not.** Everything below ran against **AIDB 7.9.0 in a Docker image** (`aidb-postgres:17`, built from the ecosystem repository) with the app connecting as an unprivileged role, and the tests are in `tests/test_aidb_integration.py` (marker `aidb`; `make test-aidb`). **No real chat model was run**: the agent's model is a scripted OpenAI-compatible server, so the tests prove the plumbing, the confinement and the checks, not how well a real model follows AIDB's simulated tool-calling format. It has **not** been run on an AgentPG-hosted instance (where the login role does not hold the AIDB grants today, which this mode reports as `unavailable` and serves from the `app` path). Agent **memory** (an AIDB preview feature) is not used. The agent framework and the governance tables are what AIDB 7.9 ships; treat them as moving.
+
+### Before and after
+
+| | `app` (default) | `aidb` |
+|---|---|---|
+| Embedding the policy text | `ingest.py` calls the embedding provider and stores `kb_chunk.embedding` (`embeddings.py`, `embedcfg.py`, vector size fixed in the table, `reembed`, startup reconcile, `reembed_job.py`) | A **Live AIDB pipeline** (`td_policy`) over `kb_chunk.embed_text` embeds new and changed rows by itself, with AIDB's local `bge-small-en-v1.5-f16` (384 dimensions, no key). A chunk inserted by the app was retrievable within seconds, with no app code. |
+| Retrieval | The app's SQL: vector, full text and trigram, fused with RRF (`search.py`) | `apgkit.retrieval.select` picks the AIDB knowledge base: its vector search fused with full text, with the **filters in the same query**: organisation, document type, department, and effective date (applied after retrieval, see limits). Same result shape, so Ask, pre-validation, the REST API and MCP are unchanged. The app's own quote check of every citation stays as the second check. |
+| AI pre-validation | The app builds the prompt and calls the gateway or a provider account (`validator.py`, `ask.py`, `accounts.py`, `llm_http.py`) | An **AIDB agent** `td_prevalidator` with two **custom SQL tools** (`td_employee_balance`: leave days and spend already approved or open; `td_travel_policy_lookup`) and **structured output** (the verdict's fields). The app still builds the prompt (the passages, the system facts, the fenced request), then verifies the agent's answer exactly as it verifies a gateway answer: every citation must point at a real passage, every quote is matched word for word, an approval without a citable basis is downgraded. |
+| What the AI may read | Application checks ("the model gets no tools") | A **purpose**: the agent's tools run as the NOLOGIN Postgres role `aidb_p_td_prevalidation`, which can `SELECT` two views (`td_policy_v`, `td_employee_balance_v`) and nothing else: no write, no other table, no name, e-mail or employee number. Postgres enforces it. |
+| Audit of what it tried | Request history and the validation row | Plus AIDB's decision records (`aidb_otel.traces`): every allowed and every **denied** tool statement, listed in the **Governance** tab and `GET /api/aidb/governance`. |
+| Tamper evidence | Row MACs on accounts, settings, sessions, tokens | The same, extended to the AIDB definitions (pipeline, model, tools, purpose and its grants, agent): sealed with the vault, verified at start-up, every minute, and right before each agent call; a mismatch turns AIDB mode off and counts in `trustdesk_tampered_rows_total{table="aidb_agent"}` and so on. |
+
+The `app` code is **not deleted**: it is the fallback and the other half of every comparison, so both paths stay testable. In `aidb` mode the app still embeds at ingest (the `kb_chunk.embedding` column is required by the `app` path and by the fallback), so the saving is at run time and in what you have to operate once you stop using the `app` path: the vector index, the re-embed job, the provider account for embeddings, and the retrieval SQL. Measured on this repository: the AIDB layer is `aidbmode.py` (about 550 lines with its operator setup), `aidbschema.py` (70) and small hooks, against `search.py`, `embeddings.py`, `embedcfg.py`, `reembed_job.py` and the re-embed and reconcile code of `migrate.py` (about 450 lines) that the `aidb` path no longer needs.
+
+### Turn it on
+
+1. The database needs the AIDB extension and a role for the app that is a member of `aidb_users` (the setup command grants it). Creating roles, purposes and models needs more than the app's own role may have, so it is an **operator command** with a privileged connection that is asked for on a prompt or read from `TRUSTDESK_AIDB_ADMIN_DSN` (or `_FILE`), used for that command only, never stored and never printed:
+   ```bash
+   export LLM_BASE_URL=https://gateway.example/v1 LLM_CHAT_MODEL=chat-default LLM_API_KEY=...   # the gateway AIDB's agent model calls (https)
+   trustdesk aidb-setup            # asks for the admin password (opens the vault) and the privileged connection string
+   ```
+   It is idempotent (a repeat prints `unchanged` for everything). Without `LLM_BASE_URL` and `LLM_CHAT_MODEL` it creates the pipeline, tools and purpose and says the agent was skipped. `--runtime-role` names the role the app runs as (default: the user of `DATABASE_URL`); `--reseal` accepts AIDB objects that no longer match their seal, after you inspected them; `--skip-model-check` registers the model without AIDB calling the endpoint first.
+2. Set `TRUSTDESK_RETRIEVAL_BACKEND=aidb` and restart. `trustdesk aidb-status` prints what is in use and why not, pipeline lag, the seals and the recent decisions; `/readyz` says `{"aidb": {"requested": "aidb", "retrieval": true, "agent": true}}` (a one-word `problem` when not, never a failure: it stays `ready`).
+
+### When it falls back to the app path (all of these were tested)
+
+AIDB not installed or not granted to the app's role; the pipeline or agent not set up; the vault locked (the seals cannot be checked, so AIDB mode waits for it); any seal that does not match; an AIDB search that raises (that call only, then the next call looks again); an agent that errors, times out, is refused or answers something that is not a verdict (the gateway path answers, or the request is `skipped` as before when no account exists). Each is logged as `AIDB MODE FALLBACK` or the kit's `RETRIEVAL BACKEND FALLBACK` with the reason.
+
+### Honest limits
+
+- **Not the same search.** AIDB mode embeds with its own local model (384 dimensions) instead of the configured embedding account, has no trigram typo tolerance (`pg_trgm` stays in the `app` path) and uses the plain `english` text-search configuration (no accent folding). Scores are comparable within one backend only. For obvious queries both paths return the same top passage (checked on the demo pack, with its offline demo embedder); for others they differ.
+- **`department` and `as_of` are AIDB-mode filters.** A document gets them from its `meta` (upload with `?department=finance&effective_date=2027-01-01`; without them a chunk is for `all` departments and effective from its upload day). The kit's filters are equality filters, so `as_of` drops passages not yet in force **after** retrieval. The `app` path ignores both. Nothing in the app sets them by default.
+- **Lag.** A Live pipeline embeds after the row commits; a request validated in the first seconds after an upload may not see the new passage. `trustdesk reembed` rewrites every chunk row; how the Live pipeline reacts to that was not measured.
+- **Detection, not prevention.** Seals notice a database write that changes an AIDB definition or the purpose role's grants; a superuser can still change them, an older authentic definition can be replayed from a backup, and the check runs at start-up, every minute and before each agent call. Not covered: the contents of `kb_chunk`, `td_governance_decisions_v`, who holds `USAGE` on the gateway credential, AIDB's own code and server settings. Any member of `aidb_users` can create AIDB agents; one named `td_*` that nobody sealed is reported, one with another name is not ours to judge. AIDB adds a built-in `sleep` tool to every agent.
+- **The tools are as broad as their views.** `td_employee_balance` takes a request id and returns aggregates (days, amounts, department, level, country) for it; the agent could ask for any request's. No personal data is in the view.
+- **Backlog.** The background catch-up pass runs only while a provider account is usable; with only the agent configured, new requests are validated at once but a request that failed is not retried by the pass.
+- **Needs https for a real gateway.** AIDB refuses plain `http` for model calls except to private addresses with the server option `aidb.allow_insecure_egress=on`, which is test-only.
+
 ## Monitoring TrustDesk (metrics)
 
 TrustDesk exposes Prometheus metrics at `/metrics` with the same names PagerLens understands (`http_requests_total`, `http_request_duration_seconds`, `db_up`, `app_info`, `trustdesk_documents`, `process_*`) plus `trustdesk_requests{status}`, `trustdesk_oldest_open_request_seconds`, `trustdesk_validations_total{state,recommendation}` and `trustdesk_validation_duration_seconds`. Create a **Metrics only** token under **Settings > API tokens**: it can scrape `/metrics` and nothing else (it is refused on `/mcp` and on the REST API). Then point [`pagerlens-agent`](https://github.com/elchinoo/PagerLens) at it to get health probes, alerts and incident analysis; see that project's README.
@@ -443,6 +487,8 @@ TrustDesk exposes Prometheus metrics at `/metrics` with the same names PagerLens
 | `TRUSTDESK_API_KEY` | none | Optional static full-access credential for automation (file alternative: `/etc/trustdesk/api_key`). Must be at least 32 characters (for example `openssl rand -base64 36`); a shorter key is refused and an error is logged. A warning is logged at startup while one is enabled. Prefer API tokens. |
 | `TRUSTDESK_ALLOW_ANONYMOUS` | `false` | `true` disables authentication entirely, but only when the bind address is loopback (`HOST=127.0.0.1`) or `TRUSTDESK_ALLOW_ANONYMOUS_PUBLIC=1` is also set. Throwaway local demos only. |
 | `LLM_BASE_URL`, `LLM_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `LLM_CHAT_MODEL`, `EMBEDDING_SEND_DIMENSIONS` | | Optional environment provider; see [Environment configuration](#environment-configuration-optional). |
+| `TRUSTDESK_RETRIEVAL_BACKEND` | `app` | `app` (plain Postgres, the app's own search and the gateway) or `aidb` (see [AIDB mode](#aidb-mode-optional-edb-ai-accelerator-inside-the-database)). An unknown value counts as `app` and is logged. |
+| `TRUSTDESK_AIDB_ADMIN_DSN[_FILE]` | none | Read by `trustdesk aidb-setup` only: the privileged connection string for that one command (otherwise it is asked on a prompt). Never put it in the app's environment, compose file or image. |
 
 ## Container image
 
@@ -528,7 +574,10 @@ You switched embedding providers. Search and uploads pause while every passage i
 make test       # unit tests, no database needed
 make test-db    # integration tests against a throwaway database on the compose Postgres
                 # (needs POSTGRES_PASSWORD exported: set -a; . ./.env; set +a)
+make test-aidb  # the whole suite against a throwaway Docker Postgres with AIDB (image aidb-postgres:17), including the `aidb` tests
 ```
+
+The tests marked `aidb` (`tests/test_aidb_integration.py`) skip unless `AIDB_TEST_URL` (a superuser DSN of a Postgres with AIDB) is set, which is why CI runs everything except them: there is no AIDB image or EDB token in CI. The switch, every fallback, the plain-Postgres objects and the CLI on a database without AIDB are in `tests/test_aidb_switch.py` and run everywhere.
 
 ## Security
 

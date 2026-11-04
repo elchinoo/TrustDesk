@@ -4,6 +4,7 @@ import { initAsk } from "/static/ask.js";
 import { initConnect } from "/static/connect.js";
 import { initDocuments } from "/static/documents.js";
 import { initEmployees } from "/static/employees.js";
+import { initGovernance } from "/static/governance.js";
 import { initReports } from "/static/reports.js";
 import { initRequests, stopLive } from "/static/requests.js";
 import { initSearch } from "/static/search.js";
@@ -11,8 +12,8 @@ import { initSettings } from "/static/settings.js";
 import { bootSession, can, refreshSession, renderLogin, renderSetup, renderVaultBanner, state } from "/kit/session.js";
 import { $, h, scrollRegion } from "/kit/ui.js";
 
-const TABS = ["requests", "employees", "reports", "documents", "search", "ask", "settings", "connect", "insights"];
-const INIT = { requests: initRequests, employees: initEmployees, reports: initReports, search: initSearch, ask: initAsk, documents: initDocuments, settings: initSettings, connect: initConnect, insights: () => initInsights($("view-insights"), api) };
+const TABS = ["requests", "employees", "reports", "documents", "search", "ask", "settings", "connect", "insights", "governance"];
+const INIT = { requests: initRequests, employees: initEmployees, reports: initReports, search: initSearch, ask: initAsk, documents: initDocuments, settings: initSettings, connect: initConnect, insights: () => initInsights($("view-insights"), api), governance: () => initGovernance($("view-governance"), api) };
 const SECTIONS = ["auth-card", "vault-banner", "nav", "signout", ...TABS.map((t) => "view-" + t)];
 
 // Earlier versions kept the API key in sessionStorage. Nothing writes it any more; remove any leftover.
@@ -36,7 +37,7 @@ async function boot(notice = "") {
   } });
 }
 
-const NEEDS = { requests: "requests:read", employees: "requests:read", reports: "reports:read", documents: "kb:read", search: "kb:read", ask: "ask", settings: "settings:manage", connect: "mcp:use", insights: "settings:manage" };
+const NEEDS = { requests: "requests:read", employees: "requests:read", reports: "reports:read", documents: "kb:read", search: "kb:read", ask: "ask", settings: "settings:manage", connect: "mcp:use", insights: "settings:manage", governance: "settings:manage" };
 
 function showApp() {
   $("auth-card").hidden = true;

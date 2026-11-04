@@ -21,12 +21,17 @@ def run() -> list[str]:
         conn.execute(AUTH_SQL)
         conn.commit()
 
+    def aidb_objects(conn) -> None:   # plain-Postgres columns, trigger and views that AIDB mode reads (aidbschema.py); idempotent
+        from . import aidbschema
+        aidbschema.apply(conn)
+        conn.commit()
+
     def harden(conn) -> None:         # last, so tables the kit just created are covered too
         from .hardening import apply
         apply(conn)
 
     return kit_migrate.run(db, MIGRATIONS, extensions=("vector",), replacements={"{{EMBEDDING_DIM}}": str(get_settings().embedding_dim)},
-                           after_migrate=[kit_tables, harden])
+                           after_migrate=[kit_tables, aidb_objects, harden])
 
 
 MAX_HNSW_DIM = 2000  # pgvector's limit for HNSW/IVFFlat indexes on the `vector` type

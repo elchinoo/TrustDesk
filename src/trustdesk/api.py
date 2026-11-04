@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from . import (
     __version__,
     accounts,
+    aidbmode,
     api_v1,
     core,
     embedcfg,
@@ -88,6 +89,20 @@ async def _backlog_loop() -> None:
             await asyncio.to_thread(validator.backlog_pass)
 
 
+AIDB_WATCH_EVERY = 60.0   # seconds between checks of the AIDB definitions' seals (metric and log, like the row MACs)
+
+
+async def _aidb_watch_loop() -> None:
+    """With TRUSTDESK_RETRIEVAL_BACKEND=aidb: look at AIDB again every minute (is it installed and granted, is it set up, does every
+    sealed definition still match its seal) so tampering shows in `trustdesk_tampered_rows_total{table="aidb_*"}` and the log without
+    waiting for a request. Does nothing with the app backend."""
+    while True:
+        if aidbmode.requested() == "aidb":
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(aidbmode.state, True)
+        await asyncio.sleep(AIDB_WATCH_EVERY)
+
+
 async def _seed_retry_loop() -> None:
     """When `trustdesk start` skipped AUTO_SEED (vault locked, provider down, ...), try again now that the app is serving and
     the vault has been unlocked, instead of waiting for the next restart."""
@@ -114,6 +129,7 @@ async def lifespan(_: FastAPI):
     _startup_tasks()
     backlog = asyncio.create_task(_backlog_loop())
     seed_retry = asyncio.create_task(_seed_retry_loop())
+    aidb_watch = asyncio.create_task(_aidb_watch_loop())
     # grants made after startup (`agentpg db-users create`, default privileges) reopen base tables to the read-only role: re-assert
     reasserter = asyncio.create_task(masking.reassert_forever(
         core.db.connect, hardening.apply, MASKING_EVERY, deny=hardening.DENY, metrics=core.metrics))
@@ -125,8 +141,9 @@ async def lifespan(_: FastAPI):
     finally:
         backlog.cancel()
         seed_retry.cancel()
+        aidb_watch.cancel()
         reasserter.cancel()
-        await asyncio.gather(backlog, seed_retry, reasserter, return_exceptions=True)
+        await asyncio.gather(backlog, seed_retry, aidb_watch, reasserter, return_exceptions=True)
         listener.stop()
 
 
@@ -274,9 +291,28 @@ def readyz():
     try:
         with connect(retries=1) as conn:
             conn.execute("SELECT 1")
-        return {"status": "ready"}
     except Exception:  # noqa: BLE001 - database may be waking; never echo connection details
         return JSONResponse({"status": "waking-database"}, status_code=503)
+    # AIDB is reported, never required: a database without it (or an AIDB that is not set up, or tampered with) is still "ready"
+    # because the app answers through its own path. Coarse words only: this route is unauthenticated.
+    try:
+        aidb_state = aidbmode.state().brief()
+    except Exception:  # noqa: BLE001
+        aidb_state = {"requested": aidbmode.requested(), "problem": "error"}
+    return {"status": "ready", "aidb": aidb_state}
+
+
+@app.get("/api/aidb/governance", dependencies=[Depends(require("settings:manage"))])
+def aidb_governance(status: str = Query("all", pattern="^(all|denied|allowed)$"), limit: int = Query(50, ge=1, le=200)):
+    """AIDB mode at a glance for an administrator: what is in use and why not (with the full reason), whether every sealed AIDB
+    definition still matches its seal, and the recent purpose decisions of the pre-validation agent (what its database role was
+    allowed to read and what Postgres refused, from AIDB's own trace table). Works on plain Postgres: it then says AIDB is off."""
+    with connect(retries=1) as conn:
+        out = {"mode": aidbmode.state(fresh=True).public()}
+        if aidbmode.requested() == "aidb" and vault.is_unlocked():
+            out["mode"]["seals"] = aidbmode.drift_of(conn) if out["mode"].get("aidb", {}).get("available") else []
+        out["governance"] = aidbmode.governance(conn, status=status, limit=limit)
+        return out
 
 
 @app.get("/api/search", dependencies=[Depends(require("read")), Depends(idle)])
@@ -288,7 +324,9 @@ def search(q: str = Query(min_length=1, max_length=MAX_QUERY), limit: int = Quer
 
 
 @app.post("/api/documents", dependencies=[Depends(require("kb:write")), Depends(idle)])
-async def upload_document(file: UploadFile = File(...), doc_type: str = Query("policy", pattern="^[a-z][a-z0-9_-]{0,29}$")):
+async def upload_document(file: UploadFile = File(...), doc_type: str = Query("policy", pattern="^[a-z][a-z0-9_-]{0,29}$"),
+                          department: str | None = Query(None, pattern="^[A-Za-z][A-Za-z0-9 _&-]{0,59}$"),
+                          effective_date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
     data = await file.read(MAX_UPLOAD + 1)  # bounded read: never buffer more than the limit
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "file too large (10 MB limit)")
@@ -300,7 +338,8 @@ async def upload_document(file: UploadFile = File(...), doc_type: str = Query("p
     except Exception as exc:  # noqa: BLE001 - malformed PDFs raise many pypdf-specific errors
         raise HTTPException(422, "could not parse file") from exc
     with _translate():
-        return ingest_text(title=name.rsplit(".", 1)[0], source=name, text=text, doc_type=doc_type)
+        meta = {k: v for k, v in (("department", department), ("effective_date", effective_date)) if v}
+        return ingest_text(title=name.rsplit(".", 1)[0], source=name, text=text, doc_type=doc_type, meta=meta)
 
 
 @app.get("/api/documents", dependencies=[Depends(require("read"))])

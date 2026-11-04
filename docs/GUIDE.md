@@ -276,6 +276,14 @@ Every variable below is read in `config.py`, `core.py`, `cli.py`, `api.py`, `emb
 | `EMBEDDING_DIM` | `768` | Vector size. Fixed in the table when the database is first migrated; changing it later triggers re-embedding. Maximum 2000 for the index. |
 | `EMBEDDING_SEND_DIMENSIONS` | `true` | `false` (`0`, `no`) if the provider rejects the `dimensions` field. |
 
+### AIDB mode
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TRUSTDESK_RETRIEVAL_BACKEND` | `app` | `app` or `aidb` (kit `apgkit.retrieval.select`). `aidb` uses an AIDB knowledge base for retrieval and an AIDB agent for pre-validation, and falls back to the app path, loudly, whenever it cannot (README, "AIDB mode"). An unknown value counts as `app`. |
+| `TRUSTDESK_AIDB_ADMIN_DSN[_FILE]` | none | Only `trustdesk aidb-setup` reads it: the privileged connection string for that one command (otherwise it prompts). Not an app setting. |
+| `LLM_BASE_URL`, `LLM_CHAT_MODEL`, `LLM_API_KEY` | | Also read by `aidb-setup` to register the chat model AIDB's agent calls (the gateway's `/v1` URL, https; the key goes into an AIDB credential limited to that host). |
+
 ### Validation behaviour
 
 | Variable | Default | Meaning |
@@ -498,7 +506,8 @@ Route requirements worth knowing: the local admin password login and the static 
 | Endpoint | Auth | Answer |
 |---|---|---|
 | `GET /healthz` | none | `200 {"status":"ok","version":"0.1.0"}` while the process runs. The image's `HEALTHCHECK` uses it. |
-| `GET /readyz` | none | `200 {"status":"ready"}` if the database answers `SELECT 1`, else `503 {"status":"waking-database"}` (the app retries with backoff). |
+| `GET /readyz` | none | `200 {"status":"ready","aidb":{...}}` if the database answers `SELECT 1`, else `503 {"status":"waking-database"}` (the app retries with backoff). `aidb` is `{"requested":"app"}` by default; with `TRUSTDESK_RETRIEVAL_BACKEND=aidb` it adds `retrieval` and `agent` (true when in use) and a one-word `problem` (`unavailable`, `not_set_up`, `vault_locked`, `tampered`, `error`). It never makes the probe fail: without AIDB the app answers through its own path. |
+| `GET /api/aidb/governance` | `settings:manage` | AIDB mode in full: requested and in-use backends with the reason, seal drift, and the recent allowed and denied purpose decisions of the pre-validation agent (`?status=all\|denied\|allowed&limit=`). Works on plain Postgres (says AIDB is off). Shown in the Governance tab. |
 | `GET /metrics` | metrics token, service scope `trustdesk.metrics`, or admin | Prometheus text. |
 | `GET /api/stats` | `kb:read` | documents, chunks, embedder, dimension, `reembedding`, `needs_reembedding`, `stored_dimension`. |
 | `GET /api/embeddings/status` | `kb:read` | re-embedding job state and the active embedding choice. |
@@ -583,6 +592,8 @@ make test-db    # integration tests against a throwaway database on the compose 
 | `test_db_search.py`, `test_embeddings.py`, `test_chunking.py`, `test_api_db.py`, `test_metrics_db.py`, `test_passwords_netguard.py`, `test_config.py` | Retrieval, embedders, chunking, API, metrics, password and SSRF guard, configuration |
 | `test_trigram_search_db.py` | Typo-tolerant search: migration 007 (indexes, idempotent, no `unaccent`), policy typos, accent plus typo, gibberish, bounded candidates, exact-before-fuzzy ordering for employees and requests, wildcard and hostile input as data, fallback without `pg_trgm` |
 | `test_edb_features_db.py` | Database insights (permission, 'not available' on plain Postgres, metrics), read-only masking with a real login role, `unaccent` (names, policy search, degradation, migration skipped without the extension), `tcn` live updates (real LISTEN, reconnect, no trigger, stream frames, endpoint guard) |
+| `test_aidb_switch.py` | AIDB mode without AIDB (runs in CI): the `app` default touches nothing of AIDB, an unknown value, `aidb` on plain Postgres (loud fallback, `/readyz` and the governance endpoint do not fail), a failing AIDB search falls back for that call and leaves the caller's transaction intact, every agent fallback (error, timeout, refused, unusable answer, no gateway account), the agent's answer checked like a gateway answer, chunk filters and the two views, a role with only the views against every other table, the CLI on plain Postgres |
+| `test_aidb_integration.py` (marker `aidb`, needs `AIDB_TEST_URL`) | Against real AIDB 7.9.0 as an unprivileged runtime role: idempotent setup, seals, privileges, AIDB retrieval and its filters and Live freshness, the agent end to end with a scripted model, denied reads and writes recorded in `aidb_otel.traces` and listed by the governance endpoint, tamper detection (rewritten agent, extra grant, rewritten tool, planted agent, deleted seal, deleted agent), locked vault, the CLI |
 | `test_kit_version.py` | The installed kit is at least 0.4.0 (vault v2 contexts, OIDC browser binding, pinned NetGuard) |
 | `test_ui_js.py` and `tests/ui/*.mjs` | UI regression tests on a fake DOM (needs Node); `insights_tab.mjs`, `live_updates.mjs` and `live_watchdog.mjs` cover the Database tab and the live stream with its poll fallback and watchdog |
 | `test_fake_llm.py` | The demo stand-in model: every scripted verdict passes TrustDesk's own verdict checks against the real policy pack |
@@ -602,6 +613,23 @@ Not covered by the suite (stated in the README and the ecosystem state report): 
 **AgentPG today.** TrustDesk runs as an AgentPG sandbox (any public image, port 8000) linked to an AgentPG Postgres instance. It reads the injected `PSQL_CONNECTION_STRING` and `PG*` variables, needs the `vector` and `pg_trgm` extensions enabled on the instance (and optionally `unaccent` and `tcn`, which add accent-insensitive search and live updates; without them the app falls back), tolerates a scaled-to-zero database (connection retries, `/readyz` reports `waking-database`), and holds all state in Postgres so a sandbox can be recreated.
 
 **What runs in the database today.** (See also the next subsection for the EDB and AgentPG features.) pgvector (`vector(N)` column with an HNSW cosine index), full-text search (`tsvector` generated column with a GIN index), `pg_trgm` (trigram GIN indexes, migration 007: chunk text, document title, request title, employee name), and a hybrid query with reciprocal rank fusion, all in plain SQL (`search.py`).
+
+### AIDB mode (agentpg-kit 0.5.0, `TRUSTDESK_RETRIEVAL_BACKEND=aidb`)
+
+Implements section 5.1 of the ecosystem plan `ecosystem/docs/03-aidb-integration.md` behind a switch, and is described for operators in the README ("AIDB mode") and for security in SECURITY.md. The pieces:
+
+| Piece | Where |
+|---|---|
+| Switch, state, fallbacks, agent call, governance read, operator setup | `aidbmode.py` (`state()` is cached 30 s and rechecked every minute by a lifespan task; `retriever()`, `agent_enabled()`, `run_agent()`, `governance()`, `setup()`) |
+| Plain-Postgres objects it reads: `kb_chunk.doc_type`, `department`, `effective_date`, `embed_text` (filled by a trigger from the document and its `meta`), views `td_policy_v` and `td_employee_balance_v` | `aidbschema.py`, applied after every `migrate` (idempotent; not a numbered migration, so the migration list is unchanged) |
+| Retrieval | `search.hybrid_search` asks `aidbmode.retriever()`; with none it runs `search.app_search`, the previous code unchanged |
+| Pre-validation | `validator._try_agent` before the gateway path; the verdict goes through `parse_verdict` either way |
+| Objects in AIDB | pipeline `td_policy` (Live, source `kb_chunk.embed_text`), model `td_chat` (gateway, `openai_completions`, credential `td_gateway`), SQL tools `td_employee_balance` and `td_travel_policy_lookup`, purpose `td_prevalidation` (role `aidb_p_td_prevalidation`), agent `td_prevalidator` with structured output; the view `td_governance_decisions_v` for the Governance tab |
+| UI and API | Governance tab (`static/governance.js`), `GET /api/aidb/governance`; uploads accept `?department=` and `?effective_date=` |
+
+How the runtime role gets what it needs (all done by `aidb-setup`): `aidb_users`; `SELECT` on the knowledge base's vector table, on the seal table and on the governance view; `USAGE` on the gateway credential; membership of the purpose role (AIDB requires the caller of `agent_converse` to be a member). It does not get `aidb_governance`, `CREATEROLE` or telemetry rights.
+
+Finding for the kit (not changed here): `apgkit.aidb.verify` begins with `CREATE TABLE IF NOT EXISTS apgkit_aidb_seal`, which Postgres refuses to a role without `CREATE` on the schema even when the table exists. `aidbmode.drift_of` therefore repeats the kit's check (same canonical definitions, same MAC) without that statement so the runtime role can run it.
 
 ### EDB and AgentPG capabilities used by this app
 
@@ -678,8 +706,13 @@ Tables created by `src/trustdesk/migrations/001` to `007` and the kit (migration
 | `serve` | Run the API and MCP server with uvicorn on `HOST:PORT`. |
 | `start` | Container entrypoint: migrate, reconcile, unlock, optional seed, serve. |
 | `reset-admin` | Forget the admin password and delete stored provider keys. |
+| `adopt-rowmacs` | Sign the security-relevant rows that have no MAC yet (asks for the admin password). |
+| `aidb-setup [--runtime-role R] [--embedding-model M] [--skip-model-check] [--reseal]` | Operator: create or converge the AIDB pipeline, tools, purpose, agent, grants and governance view, sealed with the vault. Privileged connection from a prompt or `TRUSTDESK_AIDB_ADMIN_DSN`. Idempotent. Exit 1 on failure, 2 when a sealed object was changed behind the app's back (inspect it, then `--reseal`). |
+| `aidb-status` | Print AIDB mode as JSON: requested backend, what is in use and why not, `aidb.status` (pipeline lag, agents, purposes), seals, recent decisions. Exit 1 on seal drift or a failing pipeline. |
 
 ## 16. Known limitations
+
+**AIDB mode** (README, "AIDB mode"): verified on AIDB 7.9.0 in Docker only, never on an AgentPG-hosted instance and never with a real chat model (the tests script the model); its search is not the app's search (own 384-dimension local embeddings, no typo tolerance, `english` configuration, `department` and `as_of` filters that the `app` path ignores); seals detect, they do not prevent; agent memory (preview) is not used.
 
 Verified in code or documented by the project; each is a behaviour to plan around.
 
